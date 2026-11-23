@@ -1,0 +1,8 @@
+{
+  "name": "Voter Slip Portal",
+  "description": "Polling center directory, voter search, activation management, and A4 browser print studio connected to Firestore.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
