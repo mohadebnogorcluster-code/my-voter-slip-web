@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
-import { doc, setDoc } from 'firebase/firestore';
+import { doc, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
 import type { User } from 'firebase/auth';
 import { CheckCircle2, Clock, Ban, LogOut, Send, AlertCircle } from 'lucide-react';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import type { UserRequest } from '../types/schema';
 import { formatIsoDateShort, getOrCreateWebDeviceId } from '../utils/slipHelpers';
+import { DeveloperFooter, SITE_LOGO_SRC } from './DeveloperFooter';
 
 interface ActivationViewProps {
   user: User;
@@ -50,16 +51,23 @@ export function ActivationView({ user, existingRequest, onSignOut }: ActivationV
     ) {
       setFeedback({
         type: 'error',
-        text: 'Please complete all required personal, area, and payment note fields.',
+        text: 'অনুগ্রহ করে আপনার নাম, মোবাইল নম্বর, প্রশাসনিক এলাকা এবং পেমেন্ট সংক্রান্ত সব বাধ্যতামূলক ঘর পূরণ করুন।',
       });
       return;
     }
 
     setSubmitting(true);
-    const now = new Date().toISOString();
     const path = `user_requests/${user.uid}`;
 
-    const payload: UserRequest = {
+    const existingDeviceId = (existingRequest?.deviceId ?? '').trim();
+    const resolvedDeviceId =
+      existingDeviceId.length >= 4 ? existingDeviceId : getOrCreateWebDeviceId();
+    const safeDeviceId =
+      resolvedDeviceId.length >= 4
+        ? resolvedDeviceId
+        : `web-${resolvedDeviceId}`.padEnd(8, '0');
+
+    const baseFields = {
       userId: user.uid,
       name: name.trim(),
       phone: phone.trim(),
@@ -69,23 +77,29 @@ export function ActivationView({ user, existingRequest, onSignOut }: ActivationV
       union: union.trim(),
       ward: ward.trim(),
       paymentNote: paymentNote.trim(),
-      deviceId: existingRequest?.deviceId || getOrCreateWebDeviceId(),
+      deviceId: safeDeviceId,
       electionNameYear: electionNameYear.trim(),
       postName: postName.trim(),
       candidateName: candidateName.trim(),
       symbolName: symbolName.trim(),
-      status: existingRequest?.status ?? 'pending',
-      createdAt: existingRequest?.createdAt ?? now,
-      updatedAt: now,
+      status: 'pending' as const,
+      updatedAt: serverTimestamp(),
     };
 
     try {
-      await setDoc(doc(db, 'user_requests', user.uid), payload, { merge: true });
+      if (existingRequest) {
+        await updateDoc(doc(db, 'user_requests', user.uid), baseFields);
+      } else {
+        await setDoc(doc(db, 'user_requests', user.uid), {
+          ...baseFields,
+          createdAt: serverTimestamp(),
+        });
+      }
       setFeedback({
         type: 'success',
         text: existingRequest
-          ? 'Your activation request details were updated.'
-          : 'Activation request submitted. An administrator will review and approve your account.',
+          ? 'আপনার আবেদনের তথ্য সফলভাবে হালনাগাদ করা হয়েছে।'
+          : 'অ্যাকাউন্ট সক্রিয়করণের আবেদন জমা হয়েছে। অ্যাডমিনের অনুমোদনের পর পোর্টাল স্বয়ংক্রিয়ভাবে চালু হবে।',
       });
       setEditingPending(false);
     } catch (error) {
@@ -100,11 +114,24 @@ export function ActivationView({ user, existingRequest, onSignOut }: ActivationV
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col">
+      <div className="h-1 bg-emerald-700 w-full" aria-hidden="true" />
       <header className="border-b border-slate-200 bg-white">
         <div className="max-w-5xl mx-auto px-6 h-16 flex items-center justify-between gap-8">
-          <span className="text-lg font-bold tracking-tight text-slate-900 whitespace-nowrap shrink-0">
-            Voter Slip Portal
-          </span>
+          <div className="flex items-center gap-3 shrink-0">
+            <img
+              src={SITE_LOGO_SRC}
+              alt="ভোটার স্লিপ লোগো"
+              className="w-9 h-9 rounded-lg object-cover border border-slate-200 shadow-xs shrink-0"
+            />
+            <div className="leading-tight">
+              <span className="block text-lg font-bold tracking-tight text-slate-900 whitespace-nowrap">
+                ভোটার স্লিপ পোর্টাল
+              </span>
+              <span className="block text-[11px] font-medium text-emerald-700 whitespace-nowrap">
+                শিক্ষক ডায়েরি
+              </span>
+            </div>
+          </div>
           <div className="flex items-center gap-4 shrink-0">
             <span className="hidden sm:inline text-xs text-slate-600 truncate max-w-[220px]">
               {user.email}
@@ -115,7 +142,7 @@ export function ActivationView({ user, existingRequest, onSignOut }: ActivationV
               className="inline-flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors cursor-pointer whitespace-nowrap shrink-0"
             >
               <LogOut className="w-3.5 h-3.5" />
-              Sign Out
+              সাইন আউট
             </button>
           </div>
         </div>
@@ -136,16 +163,16 @@ export function ActivationView({ user, existingRequest, onSignOut }: ActivationV
                   )}
                   <h1 className="text-xl font-semibold text-slate-900">
                     {isBlocked
-                      ? 'Account Access Blocked'
+                      ? 'অ্যাকাউন্টের প্রবেশাধিকার স্থগিত করা হয়েছে'
                       : isPending
-                      ? 'Activation Pending Review'
-                      : 'Account Approved'}
+                      ? 'আবেদনটি অনুমোদনের অপেক্ষায় রয়েছে'
+                      : 'অ্যাকাউন্ট অনুমোদিত'}
                   </h1>
                 </div>
                 <p className="text-sm text-slate-600">
                   {isBlocked
-                    ? 'Your activation request has been marked as blocked by an administrator. Contact support for assistance.'
-                    : 'Your registration has been received. Once an administrator approves your request, the full voter directory and A4 print studio will unlock automatically.'}
+                    ? 'অ্যাডমিন কর্তৃক আপনার অ্যাকাউন্টটি ব্লক বা স্থগিত করা হয়েছে। সহায়তার জন্য কর্তৃপক্ষের সাথে যোগাযোগ করুন।'
+                    : 'আপনার আবেদন গ্রহণ করা হয়েছে। অ্যাডমিন অনুমোদন দেওয়ার সাথে সাথেই ভোটার তালিকা ও এ৪ প্রিন্ট স্টুডিও চালু হয়ে যাবে।'}
                 </p>
               </div>
 
@@ -155,35 +182,35 @@ export function ActivationView({ user, existingRequest, onSignOut }: ActivationV
                   onClick={() => setEditingPending((prev) => !prev)}
                   className="px-3.5 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors cursor-pointer whitespace-nowrap shrink-0"
                 >
-                  {editingPending ? 'Cancel Edit' : 'Update Request Details'}
+                  {editingPending ? 'সম্পাদনা বাতিল' : 'আবেদনের তথ্য পরিবর্তন করুন'}
                 </button>
               )}
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-4 border-t border-slate-200 text-sm">
               <div>
-                <div className="text-xs text-slate-500">Applicant</div>
+                <div className="text-xs text-slate-500">আবেদনকারী</div>
                 <div className="font-medium text-slate-900 mt-0.5">{existingRequest.name}</div>
                 <div className="text-xs font-mono text-slate-600 mt-0.5 tabular-nums">
                   {existingRequest.phone}
                 </div>
               </div>
               <div>
-                <div className="text-xs text-slate-500">Assigned Area</div>
+                <div className="text-xs text-slate-500">নির্ধারিত এলাকা</div>
                 <div className="font-medium text-slate-900 mt-0.5">
-                  {existingRequest.union}, Ward {existingRequest.ward}
+                  {existingRequest.union}, ওয়ার্ড {existingRequest.ward}
                 </div>
                 <div className="text-xs text-slate-600 mt-0.5">
                   {existingRequest.upazila} · {existingRequest.district} · {existingRequest.division}
                 </div>
               </div>
               <div>
-                <div className="text-xs text-slate-500">Payment &amp; Submission</div>
+                <div className="text-xs text-slate-500">পেমেন্ট ও জমার তারিখ</div>
                 <div className="font-medium text-slate-900 mt-0.5 break-words">
                   {existingRequest.paymentNote}
                 </div>
                 <div className="text-xs text-slate-500 mt-0.5 tabular-nums">
-                  Updated {formatIsoDateShort(existingRequest.updatedAt)}
+                  সর্বশেষ হালনাগাদ: {formatIsoDateShort(existingRequest.updatedAt)}
                 </div>
               </div>
             </div>
@@ -215,120 +242,122 @@ export function ActivationView({ user, existingRequest, onSignOut }: ActivationV
           >
             <div className="space-y-1">
               <h2 className="text-lg font-semibold text-slate-900">
-                {existingRequest ? 'Update Activation Request' : 'Request Account Activation'}
+                {existingRequest
+                  ? 'সক্রিয়করণের আবেদন হালনাগাদ করুন'
+                  : 'অ্যাকাউন্ট সক্রিয়করণের আবেদন ফরম'}
               </h2>
               <p className="text-sm text-slate-600">
-                Enter your administrative area and offline payment reference. This matches the exact Android app activation schema.
+                আপনার নির্ধারিত নির্বাচনী এলাকা ও পেমেন্ট রেফারেন্স লিখুন। এটি মোবাইল অ্যাপের ডাটাবেসের সাথে সম্পূর্ণ সামঞ্জস্যপূর্ণ।
               </p>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <label className="block text-xs font-medium text-slate-700 mb-1.5">
-                  Full Name *
+                  পূর্ণ নাম *
                 </label>
                 <input
                   type="text"
                   required
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  placeholder="e.g. Md. Rafiqul Islam"
+                  placeholder="যেমন: মোঃ রফিকুল ইসলাম"
                   className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-600 focus:border-emerald-600"
                 />
               </div>
               <div>
                 <label className="block text-xs font-medium text-slate-700 mb-1.5">
-                  Phone Number *
+                  মোবাইল নম্বর *
                 </label>
                 <input
                   type="tel"
                   required
                   value={phone}
                   onChange={(e) => setPhone(e.target.value)}
-                  placeholder="e.g. 017XXXXXXXX"
+                  placeholder="যেমন: 017XXXXXXXX"
                   className="w-full px-3 py-2 text-sm font-mono bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-600 focus:border-emerald-600"
                 />
               </div>
             </div>
 
             <div className="pt-2 border-t border-slate-200 space-y-4">
-              <h3 className="text-sm font-semibold text-slate-900">Administrative Area</h3>
+              <h3 className="text-sm font-semibold text-slate-900">প্রশাসনিক এলাকা</h3>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                 <div>
                   <label className="block text-xs font-medium text-slate-700 mb-1.5">
-                    Division *
+                    বিভাগ *
                   </label>
                   <input
                     type="text"
                     required
                     value={division}
                     onChange={(e) => setDivision(e.target.value)}
-                    placeholder="e.g. Rajshahi"
+                    placeholder="যেমন: রাজশাহী"
                     className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-600"
                   />
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-slate-700 mb-1.5">
-                    District *
+                    জেলা *
                   </label>
                   <input
                     type="text"
                     required
                     value={district}
                     onChange={(e) => setDistrict(e.target.value)}
-                    placeholder="e.g. Bogura"
+                    placeholder="যেমন: বগুড়া"
                     className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-600"
                   />
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-slate-700 mb-1.5">
-                    Upazila / Thana *
+                    উপজেলা / থানা *
                   </label>
                   <input
                     type="text"
                     required
                     value={upazila}
                     onChange={(e) => setUpazila(e.target.value)}
-                    placeholder="e.g. Sadar"
+                    placeholder="যেমন: সদর"
                     className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-600"
                   />
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-slate-700 mb-1.5">
-                    Union / Pourashava *
+                    ইউনিয়ন / পৌরসভা *
                   </label>
                   <input
                     type="text"
                     required
                     value={union}
                     onChange={(e) => setUnion(e.target.value)}
-                    placeholder="e.g. Ward 04"
+                    placeholder="যেমন: মহাদেবপুর"
                     className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-600"
                   />
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-slate-700 mb-1.5">
-                    Ward *
+                    ওয়ার্ড নম্বর *
                   </label>
                   <input
                     type="text"
                     required
                     value={ward}
                     onChange={(e) => setWard(e.target.value)}
-                    placeholder="e.g. 04"
+                    placeholder="যেমন: ০৪"
                     className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-600"
                   />
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-slate-700 mb-1.5">
-                    Payment Reference / TrxID *
+                    পেমেন্ট রেফারেন্স / TrxID *
                   </label>
                   <input
                     type="text"
                     required
                     value={paymentNote}
                     onChange={(e) => setPaymentNote(e.target.value)}
-                    placeholder="bKash/Nagad TrxID or Note"
+                    placeholder="বিকাশ/নগদ TrxID বা মন্তব্য"
                     className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-600"
                   />
                 </div>
@@ -338,58 +367,58 @@ export function ActivationView({ user, existingRequest, onSignOut }: ActivationV
             <div className="pt-2 border-t border-slate-200 space-y-4">
               <div>
                 <h3 className="text-sm font-semibold text-slate-900">
-                  Voter Slip Campaign Header (Optional)
+                  ভোটার স্লিপ হেডার তথ্য (ঐচ্ছিক)
                 </h3>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Pre-populates your printed A4 voter slips with candidate and election information.
+                  প্রিন্ট করা প্রতিটি এ৪ ভোটার স্লিপের ওপরে প্রার্থী ও নির্বাচনের তথ্য স্বয়ংক্রিয়ভাবে যুক্ত হবে।
                 </p>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-medium text-slate-700 mb-1.5">
-                    Election Name &amp; Year
+                    নির্বাচনের নাম ও সাল
                   </label>
                   <input
                     type="text"
                     value={electionNameYear}
                     onChange={(e) => setElectionNameYear(e.target.value)}
-                    placeholder="e.g. ইউনিয়ন পরিষদ নির্বাচন ২০২৬"
+                    placeholder="যেমন: ইউনিয়ন পরিষদ নির্বাচন ২০২৬"
                     className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-600"
                   />
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-slate-700 mb-1.5">
-                    Post Name
+                    পদের নাম
                   </label>
                   <input
                     type="text"
                     value={postName}
                     onChange={(e) => setPostName(e.target.value)}
-                    placeholder="e.g. চেয়ারম্যান পদপ্রার্থী"
+                    placeholder="যেমন: চেয়ারম্যান পদপ্রার্থী"
                     className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-600"
                   />
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-slate-700 mb-1.5">
-                    Candidate Name
+                    প্রার্থীর নাম
                   </label>
                   <input
                     type="text"
                     value={candidateName}
                     onChange={(e) => setCandidateName(e.target.value)}
-                    placeholder="e.g. মোঃ আব্দুল করিম"
+                    placeholder="যেমন: মোঃ আব্দুল করিম"
                     className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-600"
                   />
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-slate-700 mb-1.5">
-                    Election Symbol
+                    নির্বাচনী প্রতীক
                   </label>
                   <input
                     type="text"
                     value={symbolName}
                     onChange={(e) => setSymbolName(e.target.value)}
-                    placeholder="e.g. আনারস / ঘোড়া"
+                    placeholder="যেমন: আনারস / ঘোড়া"
                     className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-600"
                   />
                 </div>
@@ -404,15 +433,16 @@ export function ActivationView({ user, existingRequest, onSignOut }: ActivationV
               >
                 <Send className="w-4 h-4" />
                 {submitting
-                  ? 'Saving...'
+                  ? 'সংরক্ষণ হচ্ছে...'
                   : existingRequest
-                  ? 'Save Changes'
-                  : 'Submit Activation Request'}
+                  ? 'পরিবর্তন সংরক্ষণ করুন'
+                  : 'আবেদন জমা দিন'}
               </button>
             </div>
           </form>
         )}
       </main>
+      <DeveloperFooter />
     </div>
   );
 }

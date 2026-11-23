@@ -12,10 +12,12 @@ import {
   ChevronRight,
   AlertCircle,
   Loader2,
+  Building2,
+  Share2,
 } from 'lucide-react';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import type { PollingCenter, UserRequest, VoterRecord } from '../types/schema';
-import { normalizeSearchText } from '../utils/slipHelpers';
+import { formatBnNumber, normalizeSearchText, toBanglaDigits } from '../utils/slipHelpers';
 
 interface VoterSearchWorkspaceProps {
   userRequest: UserRequest | null;
@@ -23,10 +25,22 @@ interface VoterSearchWorkspaceProps {
   onToggleQueue: (voter: VoterRecord) => void;
   onAddManyToQueue: (voters: VoterRecord[]) => void;
   onQuickPrintSingle: (voter: VoterRecord) => void;
+  onShareSingle?: (voter: VoterRecord) => void;
   onOpenPrintStudio: () => void;
+  refreshKey?: number;
+  onCentersLoaded?: (centers: PollingCenter[]) => void;
+  onVotersUpdated?: (voters: VoterRecord[]) => void;
+  onOpenSeatPlanModal?: (centerId?: string) => void;
+  canManageSeatPlan?: boolean;
 }
 
 const PAGE_SIZE = 50;
+
+const GENDER_FILTER_LABELS: Record<'all' | 'male' | 'female', string> = {
+  all: 'সকল',
+  male: 'পুরুষ',
+  female: 'মহিলা',
+};
 
 export function VoterSearchWorkspace({
   userRequest,
@@ -34,7 +48,13 @@ export function VoterSearchWorkspace({
   onToggleQueue,
   onAddManyToQueue,
   onQuickPrintSingle,
+  onShareSingle,
   onOpenPrintStudio,
+  refreshKey = 0,
+  onCentersLoaded,
+  onVotersUpdated,
+  onOpenSeatPlanModal,
+  canManageSeatPlan = false,
 }: VoterSearchWorkspaceProps) {
   const [centers, setCenters] = useState<PollingCenter[]>([]);
   const [loadingCenters, setLoadingCenters] = useState(true);
@@ -78,6 +98,7 @@ export function VoterSearchWorkspace({
         }));
         list.sort((a, b) => a.centerName.localeCompare(b.centerName));
         setCenters(list);
+        onCentersLoaded?.(list);
       } catch (err) {
         // Fallback to user's assigned area if rules enforce scoped reads
         if (userRequest?.division && userRequest?.district && userRequest?.upazila) {
@@ -96,19 +117,20 @@ export function VoterSearchWorkspace({
             }));
             list.sort((a, b) => a.centerName.localeCompare(b.centerName));
             setCenters(list);
+            onCentersLoaded?.(list);
           } catch (scopedErr) {
             if (!active) return;
             setCentersError(
               scopedErr instanceof Error
                 ? scopedErr.message
-                : 'Unable to load polling centers.'
+                : 'ভোটকেন্দ্রের তালিকা লোড করা যায়নি।'
             );
             handleFirestoreError(scopedErr, OperationType.LIST, 'centers_list');
           }
         } else {
           if (!active) return;
           setCentersError(
-            err instanceof Error ? err.message : 'Unable to load polling centers.'
+            err instanceof Error ? err.message : 'ভোটকেন্দ্রের তালিকা লোড করা যায়নি।'
           );
           handleFirestoreError(err, OperationType.LIST, 'centers_list');
         }
@@ -283,10 +305,13 @@ export function VoterSearchWorkspace({
         }));
         rows.sort((a, b) => (a.serialNumeric ?? 0) - (b.serialNumeric ?? 0));
         setVoters(rows);
+        onVotersUpdated?.(rows);
       } catch (err) {
         if (!active) return;
         setVotersError(
-          err instanceof Error ? err.message : 'Unable to load voter records for this center.'
+          err instanceof Error
+            ? err.message
+            : 'এই ভোটকেন্দ্রের ভোটার তালিকা লোড করা যায়নি।'
         );
         handleFirestoreError(err, OperationType.LIST, `voters_data?centerId=${selectedCenterId}`);
       } finally {
@@ -298,7 +323,7 @@ export function VoterSearchWorkspace({
     return () => {
       active = false;
     };
-  }, [selectedCenterId]);
+  }, [selectedCenterId, refreshKey]);
 
   const handleGlobalVoterLookup = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -321,7 +346,7 @@ export function VoterSearchWorkspace({
       rows.sort((a, b) => (a.serialNumeric ?? 0) - (b.serialNumeric ?? 0));
       setVoters(rows);
     } catch (err) {
-      setVotersError(err instanceof Error ? err.message : 'Global voter lookup failed.');
+      setVotersError(err instanceof Error ? err.message : 'ভোটার নম্বর অনুসন্ধান ব্যর্থ হয়েছে।');
       handleFirestoreError(err, OperationType.LIST, `voters_data?voterNo=${trimmed}`);
     } finally {
       setGlobalSearching(false);
@@ -345,7 +370,7 @@ export function VoterSearchWorkspace({
     return voters.filter((v) => {
       if (genderFilter !== 'all') {
         const g = (v.gender || '').toLowerCase();
-        const isMale = g.includes('male') && !g.includes('female') || g.includes('পুরুষ');
+        const isMale = (g.includes('male') && !g.includes('female')) || g.includes('পুরুষ');
         const isFemale = g.includes('female') || g.includes('মহিলা') || g.includes('নারী');
         if (genderFilter === 'male' && !isMale) return false;
         if (genderFilter === 'female' && !isFemale) return false;
@@ -401,7 +426,7 @@ export function VoterSearchWorkspace({
           <div className="flex items-center gap-2">
             <MapPin className="w-4 h-4 text-emerald-700 shrink-0" />
             <h1 className="text-base font-semibold text-slate-900">
-              Polling Center Directory
+              ভোটকেন্দ্র ডিরেক্টরি ও এলাকা নির্বাচন
             </h1>
           </div>
 
@@ -411,7 +436,7 @@ export function VoterSearchWorkspace({
                 type="text"
                 value={globalVoterNo}
                 onChange={(e) => setGlobalVoterNo(e.target.value)}
-                placeholder="Exact Voter No lookup..."
+                placeholder="সরাসরি ভোটার নম্বর লিখুন..."
                 className="w-48 sm:w-56 px-3 py-1.5 text-xs font-mono bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-600"
               />
               <button
@@ -419,7 +444,7 @@ export function VoterSearchWorkspace({
                 disabled={globalSearching || !globalVoterNo.trim()}
                 className="px-3 py-1.5 text-xs font-medium text-slate-700 bg-slate-100 border border-slate-200 rounded-lg hover:bg-slate-200 disabled:opacity-50 transition-colors cursor-pointer whitespace-nowrap"
               >
-                {globalSearching ? 'Finding...' : 'Find Voter No'}
+                {globalSearching ? 'খোঁজা হচ্ছে...' : 'ভোটার নম্বর খুঁজুন'}
               </button>
             </form>
 
@@ -430,7 +455,7 @@ export function VoterSearchWorkspace({
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors cursor-pointer whitespace-nowrap"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
-                Reset
+                রিসেট
               </button>
             )}
           </div>
@@ -445,9 +470,7 @@ export function VoterSearchWorkspace({
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3">
           <div>
-            <label className="block text-[11px] font-medium text-slate-500 mb-1">
-              Division
-            </label>
+            <label className="block text-xs font-medium text-slate-600 mb-1">বিভাগ</label>
             <select
               value={division}
               disabled={loadingCenters}
@@ -461,7 +484,7 @@ export function VoterSearchWorkspace({
               }}
               className="w-full px-2.5 py-2 text-xs bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-600"
             >
-              <option value="">All Divisions</option>
+              <option value="">সকল বিভাগ</option>
               {divisions.map((d) => (
                 <option key={d} value={d}>
                   {d}
@@ -471,9 +494,7 @@ export function VoterSearchWorkspace({
           </div>
 
           <div>
-            <label className="block text-[11px] font-medium text-slate-500 mb-1">
-              District
-            </label>
+            <label className="block text-xs font-medium text-slate-600 mb-1">জেলা</label>
             <select
               value={district}
               disabled={loadingCenters}
@@ -486,7 +507,7 @@ export function VoterSearchWorkspace({
               }}
               className="w-full px-2.5 py-2 text-xs bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-600"
             >
-              <option value="">All Districts</option>
+              <option value="">সকল জেলা</option>
               {districts.map((d) => (
                 <option key={d} value={d}>
                   {d}
@@ -496,9 +517,7 @@ export function VoterSearchWorkspace({
           </div>
 
           <div>
-            <label className="block text-[11px] font-medium text-slate-500 mb-1">
-              Upazila
-            </label>
+            <label className="block text-xs font-medium text-slate-600 mb-1">উপজেলা / থানা</label>
             <select
               value={upazila}
               disabled={loadingCenters}
@@ -510,7 +529,7 @@ export function VoterSearchWorkspace({
               }}
               className="w-full px-2.5 py-2 text-xs bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-600"
             >
-              <option value="">All Upazilas</option>
+              <option value="">সকল উপজেলা</option>
               {upazilas.map((u) => (
                 <option key={u} value={u}>
                   {u}
@@ -520,8 +539,8 @@ export function VoterSearchWorkspace({
           </div>
 
           <div>
-            <label className="block text-[11px] font-medium text-slate-500 mb-1">
-              Union
+            <label className="block text-xs font-medium text-slate-600 mb-1">
+              ইউনিয়ন / পৌরসভা
             </label>
             <select
               value={union}
@@ -533,7 +552,7 @@ export function VoterSearchWorkspace({
               }}
               className="w-full px-2.5 py-2 text-xs bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-600"
             >
-              <option value="">All Unions</option>
+              <option value="">সকল ইউনিয়ন</option>
               {unions.map((u) => (
                 <option key={u} value={u}>
                   {u}
@@ -543,9 +562,7 @@ export function VoterSearchWorkspace({
           </div>
 
           <div>
-            <label className="block text-[11px] font-medium text-slate-500 mb-1">
-              Ward
-            </label>
+            <label className="block text-xs font-medium text-slate-600 mb-1">ওয়ার্ড</label>
             <select
               value={ward}
               disabled={loadingCenters}
@@ -555,7 +572,7 @@ export function VoterSearchWorkspace({
               }}
               className="w-full px-2.5 py-2 text-xs bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-600"
             >
-              <option value="">All Wards</option>
+              <option value="">সকল ওয়ার্ড</option>
               {wards.map((w) => (
                 <option key={w} value={w}>
                   {w}
@@ -565,8 +582,8 @@ export function VoterSearchWorkspace({
           </div>
 
           <div>
-            <label className="block text-[11px] font-medium text-slate-500 mb-1">
-              Polling Center ({filteredCenters.length})
+            <label className="block text-xs font-medium text-slate-600 mb-1">
+              ভোটকেন্দ্র ({formatBnNumber(filteredCenters.length)})
             </label>
             <select
               value={selectedCenterId}
@@ -575,11 +592,11 @@ export function VoterSearchWorkspace({
               className="w-full px-2.5 py-2 text-xs font-medium bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-600"
             >
               <option value="">
-                {loadingCenters ? 'Loading centers...' : 'Select a polling center'}
+                {loadingCenters ? 'কেন্দ্র লোড হচ্ছে...' : 'ভোটকেন্দ্র নির্বাচন করুন'}
               </option>
               {filteredCenters.map((c) => (
                 <option key={c.id} value={c.id}>
-                  {c.centerName} ({c.totalVoters})
+                  {c.centerName} ({formatBnNumber(c.totalVoters)})
                 </option>
               ))}
             </select>
@@ -590,31 +607,33 @@ export function VoterSearchWorkspace({
         {activeCenter && (
           <div className="pt-4 border-t border-slate-200 grid grid-cols-2 sm:grid-cols-5 gap-4 text-xs">
             <div className="col-span-2">
-              <div className="text-slate-500">Selected Center</div>
+              <div className="text-slate-500">নির্বাচিত ভোটকেন্দ্র</div>
               <div className="font-semibold text-slate-900 text-sm mt-0.5">
                 {activeCenter.centerName}
               </div>
               <div className="text-slate-600 mt-0.5">
-                {activeCenter.union} · Ward {activeCenter.ward}
-                {activeCenter.voterAreaCode ? ` · Code ${activeCenter.voterAreaCode}` : ''}
+                {activeCenter.union} · ওয়ার্ড {activeCenter.ward}
+                {activeCenter.voterAreaCode
+                  ? ` · এলাকা কোড ${activeCenter.voterAreaCode}`
+                  : ''}
               </div>
             </div>
             <div>
-              <div className="text-slate-500">Total Voters</div>
-              <div className="text-lg font-semibold font-mono tabular-nums text-slate-900 mt-0.5">
-                {activeCenter.totalVoters.toLocaleString()}
+              <div className="text-slate-500">মোট ভোটার</div>
+              <div className="text-lg font-semibold tabular-nums text-slate-900 mt-0.5">
+                {formatBnNumber(activeCenter.totalVoters)}
               </div>
             </div>
             <div>
-              <div className="text-slate-500">Male</div>
-              <div className="text-lg font-semibold font-mono tabular-nums text-slate-900 mt-0.5">
-                {activeCenter.maleCount.toLocaleString()}
+              <div className="text-slate-500">পুরুষ ভোটার</div>
+              <div className="text-lg font-semibold tabular-nums text-slate-900 mt-0.5">
+                {formatBnNumber(activeCenter.maleCount)}
               </div>
             </div>
             <div>
-              <div className="text-slate-500">Female</div>
-              <div className="text-lg font-semibold font-mono tabular-nums text-slate-900 mt-0.5">
-                {activeCenter.femaleCount.toLocaleString()}
+              <div className="text-slate-500">মহিলা ভোটার</div>
+              <div className="text-lg font-semibold tabular-nums text-slate-900 mt-0.5">
+                {formatBnNumber(activeCenter.femaleCount)}
               </div>
             </div>
           </div>
@@ -633,7 +652,7 @@ export function VoterSearchWorkspace({
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 disabled={voters.length === 0}
-                placeholder="Search by name, voter no, serial no, father, mother, or address..."
+                placeholder="ভোটারের নাম, ভোটার নম্বর, ক্রমিক, পিতা-মাতার নাম বা ঠিকানা দিয়ে খুঁজুন..."
                 className="w-full pl-9 pr-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-600 disabled:bg-slate-50"
               />
             </div>
@@ -645,16 +664,27 @@ export function VoterSearchWorkspace({
                     key={g}
                     type="button"
                     onClick={() => setGenderFilter(g)}
-                    className={`px-3 py-1 text-xs font-medium rounded-md capitalize transition-colors cursor-pointer whitespace-nowrap ${
+                    className={`px-3 py-1 text-xs font-medium rounded-md transition-colors cursor-pointer whitespace-nowrap ${
                       genderFilter === g
                         ? 'bg-white text-slate-900 shadow-xs'
                         : 'text-slate-600 hover:text-slate-900'
                     }`}
                   >
-                    {g}
+                    {GENDER_FILTER_LABELS[g]}
                   </button>
                 ))}
               </div>
+
+              {canManageSeatPlan && onOpenSeatPlanModal && (
+                <button
+                  type="button"
+                  onClick={() => onOpenSeatPlanModal(selectedCenterId || undefined)}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-[#0B6E5C] bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-100 transition-colors cursor-pointer whitespace-nowrap"
+                >
+                  <Building2 className="w-3.5 h-3.5" />
+                  ভবন ও কক্ষ বিন্যাস
+                </button>
+              )}
 
               {queuedIds.size > 0 && (
                 <button
@@ -663,7 +693,7 @@ export function VoterSearchWorkspace({
                   className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold text-white bg-emerald-700 rounded-lg hover:bg-emerald-800 transition-colors cursor-pointer whitespace-nowrap"
                 >
                   <Printer className="w-3.5 h-3.5" />
-                  Print Studio ({queuedIds.size})
+                  প্রিন্ট স্টুডিও ({formatBnNumber(queuedIds.size)})
                 </button>
               )}
             </div>
@@ -672,18 +702,19 @@ export function VoterSearchWorkspace({
           {filteredVoters.length > 0 && (
             <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-slate-100 text-xs">
               <div className="text-slate-600 tabular-nums">
-                Showing {pagedVoters.length} of {filteredVoters.length.toLocaleString()} matching voters
-                {isGlobalMode ? ' (Global Voter No Search)' : ''}
+                মোট {formatBnNumber(filteredVoters.length)} জন ভোটারের মধ্যে{' '}
+                {formatBnNumber(pagedVoters.length)} জন দেখানো হচ্ছে
+                {isGlobalMode ? ' (ভোটার নম্বর অনুযায়ী অনুসন্ধান)' : ''}
               </div>
 
               <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-slate-500">Batch queue serial range:</span>
+                <span className="text-slate-500">ক্রমিক নম্বর অনুযায়ী যোগ করুন:</span>
                 <input
                   type="number"
                   min={1}
                   value={rangeStart}
                   onChange={(e) => setRangeStart(e.target.value)}
-                  placeholder="From"
+                  placeholder="শুরু"
                   className="w-20 px-2 py-1 text-xs font-mono tabular-nums border border-slate-300 rounded-md"
                 />
                 <span className="text-slate-400">–</span>
@@ -692,7 +723,7 @@ export function VoterSearchWorkspace({
                   min={1}
                   value={rangeEnd}
                   onChange={(e) => setRangeEnd(e.target.value)}
-                  placeholder="To"
+                  placeholder="শেষ"
                   className="w-20 px-2 py-1 text-xs font-mono tabular-nums border border-slate-300 rounded-md"
                 />
                 <button
@@ -701,14 +732,14 @@ export function VoterSearchWorkspace({
                   disabled={!rangeStart || !rangeEnd}
                   className="px-2.5 py-1 text-xs font-medium text-slate-700 bg-slate-100 border border-slate-200 rounded-md hover:bg-slate-200 disabled:opacity-50 cursor-pointer whitespace-nowrap"
                 >
-                  Queue Range
+                  রেঞ্জ যোগ করুন
                 </button>
                 <button
                   type="button"
                   onClick={() => onAddManyToQueue(pagedVoters)}
                   className="px-2.5 py-1 text-xs font-medium text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-md hover:bg-emerald-100 cursor-pointer whitespace-nowrap"
                 >
-                  Queue Page ({pagedVoters.length})
+                  পুরো পৃষ্ঠা যোগ করুন ({formatBnNumber(pagedVoters.length)})
                 </button>
               </div>
             </div>
@@ -726,24 +757,24 @@ export function VoterSearchWorkspace({
         {loadingVoters || globalSearching ? (
           <div className="p-12 flex flex-col items-center justify-center gap-3 text-slate-500">
             <Loader2 className="w-6 h-6 animate-spin text-emerald-700" />
-            <p className="text-sm">Loading voter records...</p>
+            <p className="text-sm">ভোটার তালিকা লোড হচ্ছে...</p>
           </div>
         ) : !selectedCenterId && !isGlobalMode ? (
           <div className="p-12 text-center space-y-2">
             <Users className="w-8 h-8 text-slate-400 mx-auto" />
             <h2 className="text-sm font-semibold text-slate-900">
-              Select a polling center to view voters
+              ভোটার তালিকা দেখতে একটি ভোটকেন্দ্র নির্বাচন করুন
             </h2>
             <p className="text-xs text-slate-500 max-w-md mx-auto">
-              Use the division, district, upazila, union, and ward filters above, or enter an exact Voter No for global lookup.
+              উপরের বিভাগ, জেলা, উপজেলা, ইউনিয়ন ও ওয়ার্ড ফিল্টার ব্যবহার করুন অথবা সরাসরি ভোটার নম্বর লিখে অনুসন্ধান করুন।
             </p>
           </div>
         ) : filteredVoters.length === 0 ? (
           <div className="p-12 text-center space-y-2">
             <Search className="w-8 h-8 text-slate-400 mx-auto" />
-            <h2 className="text-sm font-semibold text-slate-900">No matching voters found</h2>
+            <h2 className="text-sm font-semibold text-slate-900">কোনো ভোটার পাওয়া যায়নি</h2>
             <p className="text-xs text-slate-500">
-              Try clearing your search query or switching the gender filter.
+              সার্চ বক্স খালি করে অথবা লিঙ্গ ফিল্টার পরিবর্তন করে পুনরায় চেষ্টা করুন।
             </p>
           </div>
         ) : (
@@ -751,15 +782,16 @@ export function VoterSearchWorkspace({
             <div className="overflow-x-auto">
               <table className="w-full text-left border-collapse">
                 <thead>
-                  <tr className="border-b border-slate-200 bg-slate-50 text-[11px] font-semibold text-slate-600">
-                    <th className="py-2.5 px-4 w-10">Queue</th>
-                    <th className="py-2.5 px-3">Serial</th>
-                    <th className="py-2.5 px-3">Voter No</th>
-                    <th className="py-2.5 px-3">Voter Name</th>
-                    <th className="py-2.5 px-3">Father / Mother</th>
-                    <th className="py-2.5 px-3">DOB · Gender</th>
-                    <th className="py-2.5 px-3">Address</th>
-                    <th className="py-2.5 px-4 text-right">Action</th>
+                  <tr className="border-b border-slate-200 bg-slate-50 text-xs font-semibold text-slate-700">
+                    <th className="py-2.5 px-4 w-10">তালিকা</th>
+                    <th className="py-2.5 px-3">ক্রমিক নং</th>
+                    <th className="py-2.5 px-3">ভোটার নম্বর</th>
+                    <th className="py-2.5 px-3">ভোটারের নাম</th>
+                    <th className="py-2.5 px-3">পিতা / মাতা</th>
+                    <th className="py-2.5 px-3">জন্ম তারিখ · লিঙ্গ</th>
+                    <th className="py-2.5 px-3">ভবন ও কক্ষ</th>
+                    <th className="py-2.5 px-3">ঠিকানা</th>
+                    <th className="py-2.5 px-4 text-right">পদক্ষেপ</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-200 text-xs">
@@ -778,8 +810,8 @@ export function VoterSearchWorkspace({
                             onClick={() => onToggleQueue(voter)}
                             aria-label={
                               inQueue
-                                ? `Remove ${voter.name} from print queue`
-                                : `Add ${voter.name} to print queue`
+                                ? `${voter.name}-কে প্রিন্ট তালিকা থেকে সরান`
+                                : `${voter.name}-কে প্রিন্ট তালিকায় যোগ করুন`
                             }
                             className={`w-6 h-6 rounded-md border flex items-center justify-center transition-colors cursor-pointer ${
                               inQueue
@@ -818,18 +850,40 @@ export function VoterSearchWorkspace({
                           <div className="font-mono tabular-nums">{voter.dateOfBirth || '—'}</div>
                           <div className="text-[11px] text-slate-500">{voter.gender || '—'}</div>
                         </td>
+                        <td className="py-2.5 px-3 text-slate-700 whitespace-nowrap">
+                          <div className="font-medium text-slate-900">
+                            {voter.buildingName?.trim() || '—'}
+                          </div>
+                          <div className="text-[11px] text-slate-500 tabular-nums">
+                            {voter.roomNumber?.trim()
+                              ? `কক্ষ: ${toBanglaDigits(voter.roomNumber.trim())}`
+                              : 'কক্ষ নির্ধারিত নয়'}
+                          </div>
+                        </td>
                         <td className="py-2.5 px-3 text-slate-600 max-w-[240px] truncate">
                           {voter.address || '—'}
                         </td>
                         <td className="py-2.5 px-4 text-right whitespace-nowrap">
-                          <button
-                            type="button"
-                            onClick={() => onQuickPrintSingle(voter)}
-                            className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-md hover:bg-slate-100 hover:text-slate-900 transition-colors cursor-pointer whitespace-nowrap"
-                          >
-                            <Printer className="w-3.5 h-3.5" />
-                            Print Slip
-                          </button>
+                          <div className="inline-flex items-center gap-1.5">
+                            {onShareSingle && (
+                              <button
+                                type="button"
+                                onClick={() => onShareSingle(voter)}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-md hover:bg-emerald-100 transition-colors cursor-pointer whitespace-nowrap"
+                              >
+                                <Share2 className="w-3.5 h-3.5" />
+                                রঙিন শেয়ার
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => onQuickPrintSingle(voter)}
+                              className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-md hover:bg-slate-100 hover:text-slate-900 transition-colors cursor-pointer whitespace-nowrap"
+                            >
+                              <Printer className="w-3.5 h-3.5" />
+                              স্লিপ প্রিন্ট
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     );
@@ -841,7 +895,7 @@ export function VoterSearchWorkspace({
             {totalPages > 1 && (
               <div className="px-4 py-3 border-t border-slate-200 flex items-center justify-between text-xs text-slate-600">
                 <span className="tabular-nums">
-                  Page {page} of {totalPages}
+                  পৃষ্ঠা {formatBnNumber(page)} / {formatBnNumber(totalPages)}
                 </span>
                 <div className="flex items-center gap-2">
                   <button
@@ -851,7 +905,7 @@ export function VoterSearchWorkspace({
                     className="inline-flex items-center gap-1 px-2.5 py-1 border border-slate-200 rounded-md hover:bg-slate-50 disabled:opacity-40 cursor-pointer"
                   >
                     <ChevronLeft className="w-3.5 h-3.5" />
-                    Prev
+                    পূর্ববর্তী
                   </button>
                   <button
                     type="button"
@@ -859,7 +913,7 @@ export function VoterSearchWorkspace({
                     disabled={page === totalPages}
                     className="inline-flex items-center gap-1 px-2.5 py-1 border border-slate-200 rounded-md hover:bg-slate-50 disabled:opacity-40 cursor-pointer"
                   >
-                    Next
+                    পরবর্তী
                     <ChevronRight className="w-3.5 h-3.5" />
                   </button>
                 </div>

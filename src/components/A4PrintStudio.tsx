@@ -1,26 +1,33 @@
-import { useState } from 'react';
-import { doc, updateDoc } from 'firebase/firestore';
+import React, { useRef, useState } from 'react';
+import { doc, serverTimestamp, updateDoc } from 'firebase/firestore';
 import {
   Printer,
   Trash2,
   Save,
   CheckCircle2,
   ArrowLeft,
-  Scissors,
   FileText,
+  ImagePlus,
+  X,
+  Download,
+  Share2,
+  Loader2,
 } from 'lucide-react';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import type {
-  SlipLayoutMode,
+  SlipPrintColorMode,
   SlipPrintConfig,
   UserRequest,
   VoterRecord,
 } from '../types/schema';
 import {
   chunkArray,
-  getSlipsPerPage,
+  formatBnNumber,
   persistLocalPrintConfig,
+  resizeImageFileToDataUrl,
 } from '../utils/slipHelpers';
+import { generateBwA4PdfFromElements } from '../utils/slipCapture';
+import { VoterSlipCard } from './VoterSlipCard';
 
 interface A4PrintStudioProps {
   voters: VoterRecord[];
@@ -31,51 +38,8 @@ interface A4PrintStudioProps {
   onRemoveVoter: (voterId: string) => void;
   onClearQueue: () => void;
   onBackToSearch: () => void;
+  onShareVoter?: (voter: VoterRecord) => void;
 }
-
-const LABELS = {
-  bn: {
-    slipTitle: 'ভোটার স্লিপ',
-    serial: 'ক্রমিক নং',
-    voterNo: 'ভোটার নং',
-    name: 'নাম',
-    father: 'পিতা',
-    mother: 'মাতা',
-    dob: 'জন্ম তারিখ',
-    gender: 'লিঙ্গ',
-    occupation: 'পেশা',
-    center: 'ভোটকেন্দ্র',
-    wardUnion: 'ওয়ার্ড/ইউনিয়ন',
-    areaCode: 'এলাকা কোড',
-    address: 'ঠিকানা',
-    candidate: 'প্রার্থী',
-    symbol: 'প্রতীক',
-  },
-  en: {
-    slipTitle: 'VOTER SLIP',
-    serial: 'Serial No',
-    voterNo: 'Voter No',
-    name: 'Name',
-    father: 'Father',
-    mother: 'Mother',
-    dob: 'Date of Birth',
-    gender: 'Gender',
-    occupation: 'Occupation',
-    center: 'Polling Center',
-    wardUnion: 'Ward / Union',
-    areaCode: 'Area Code',
-    address: 'Address',
-    candidate: 'Candidate',
-    symbol: 'Symbol',
-  },
-};
-
-const LAYOUT_OPTIONS: { value: SlipLayoutMode; label: string; gridNote: string }[] = [
-  { value: '4-up', label: '4 Slips / A4', gridNote: '2×2 Grid' },
-  { value: '6-up', label: '6 Slips / A4', gridNote: '2×3 Grid' },
-  { value: '8-up', label: '8 Slips / A4', gridNote: '2×4 Grid' },
-  { value: '1-up', label: '1 Slip / A4', gridNote: 'Full Sheet' },
-];
 
 export function A4PrintStudio({
   voters,
@@ -86,24 +50,45 @@ export function A4PrintStudio({
   onRemoveVoter,
   onClearQueue,
   onBackToSearch,
+  onShareVoter,
 }: A4PrintStudioProps) {
   const [savingDefaults, setSavingDefaults] = useState(false);
   const [savedMessage, setSavedMessage] = useState<string | null>(null);
+  const [generatingPdf, setGeneratingPdf] = useState(false);
+  const [pdfError, setPdfError] = useState<string | null>(null);
 
-  const perPage = getSlipsPerPage(config.layout);
-  const pages = chunkArray(voters, perPage);
-  const t = LABELS[config.language];
+  const bwCaptureRefs = useRef<(HTMLDivElement | null)[]>([]);
+
+  // Fixed 4 slips per A4 page (2x2) so 1, 2, or 3 slips preserve the exact same slip size
+  const pages = chunkArray(voters, 4);
+  const isMonochrome = config.printColorMode !== 'color';
 
   const updateConfig = (patch: Partial<SlipPrintConfig>) => {
-    const next = { ...config, ...patch };
+    const next = { ...config, layout: '4-up' as const, ...patch };
     onChangeConfig(next);
     persistLocalPrintConfig(next);
+  };
+
+  const handlePhotoUpload = async (
+    e: React.ChangeEvent<HTMLInputElement>,
+    field: 'candidatePhotoUrl' | 'symbolPhotoUrl'
+  ) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const dataUrl = await resizeImageFileToDataUrl(file, 260);
+      updateConfig({ [field]: dataUrl });
+    } catch {
+      // Ignore invalid image files
+    } finally {
+      e.target.value = '';
+    }
   };
 
   const handleSaveCampaignDefaults = async () => {
     persistLocalPrintConfig(config);
     if (!userRequest) {
-      setSavedMessage('Saved locally for this browser.');
+      setSavedMessage('এই ব্রাউজারে স্লিপের ডিফল্ট তথ্য সংরক্ষিত হয়েছে।');
       setTimeout(() => setSavedMessage(null), 3000);
       return;
     }
@@ -117,9 +102,11 @@ export function A4PrintStudio({
         postName: config.postName.trim(),
         candidateName: config.candidateName.trim(),
         symbolName: config.symbolName.trim(),
-        updatedAt: new Date().toISOString(),
+        candidatePhotoUrl: config.candidatePhotoUrl,
+        symbolPhotoUrl: config.symbolPhotoUrl,
+        updatedAt: serverTimestamp(),
       });
-      setSavedMessage('Campaign header defaults synced to your account.');
+      setSavedMessage('প্রচারণা স্লিপের তথ্য ও ছবি আপনার অ্যাকাউন্টে সংরক্ষিত হয়েছে।');
       setTimeout(() => setSavedMessage(null), 3500);
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, path);
@@ -132,6 +119,28 @@ export function A4PrintStudio({
     window.print();
   };
 
+  const handleDownloadBwPdf = async () => {
+    const elements = bwCaptureRefs.current
+      .slice(0, voters.length)
+      .filter((el): el is HTMLDivElement => el !== null);
+    if (elements.length === 0) return;
+
+    setGeneratingPdf(true);
+    setPdfError(null);
+    try {
+      const dateSlug = new Date().toISOString().slice(0, 10);
+      await generateBwA4PdfFromElements(elements, `voter-slips-bw-a4-${dateSlug}.pdf`);
+    } catch (err) {
+      setPdfError(
+        err instanceof Error
+          ? err.message
+          : 'পিডিএফ তৈরি করতে সমস্যা হয়েছে। অনুগ্রহ করে প্রিন্ট বাটন থেকে Save as PDF ব্যবহার করুন।'
+      );
+    } finally {
+      setGeneratingPdf(false);
+    }
+  };
+
   if (voters.length === 0) {
     return (
       <div className="bg-white border border-slate-200 rounded-xl p-12 text-center space-y-4">
@@ -139,9 +148,9 @@ export function A4PrintStudio({
           <FileText className="w-5 h-5" />
         </div>
         <div className="space-y-1 max-w-md mx-auto">
-          <h2 className="text-lg font-semibold text-slate-900">Your A4 Print Queue is empty</h2>
+          <h2 className="text-lg font-semibold text-slate-900">প্রিন্ট তালিকা বর্তমানে খালি</h2>
           <p className="text-sm text-slate-600">
-            Select individual voters or a serial number range in the Voter Search directory to generate formatted A4 sheets.
+            এ৪ কাগজে সাদাকালো ভোটার স্লিপ প্রিন্ট বা পিডিএফ ডাউনলোড করতে ভোটার অনুসন্ধান তালিকা থেকে ১, ২, ৩ বা ৪+ জন ভোটার নির্বাচন করুন।
           </p>
         </div>
         <button
@@ -150,7 +159,7 @@ export function A4PrintStudio({
           className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-emerald-700 rounded-lg hover:bg-emerald-800 transition-colors cursor-pointer"
         >
           <ArrowLeft className="w-4 h-4" />
-          Browse Voter Directory
+          ভোটার তালিকায় ফিরে যান
         </button>
       </div>
     );
@@ -167,13 +176,14 @@ export function A4PrintStudio({
             className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors cursor-pointer whitespace-nowrap"
           >
             <ArrowLeft className="w-3.5 h-3.5" />
-            Back to Search
+            অনুসন্ধানে ফিরুন
           </button>
           <div>
-            <h1 className="text-base font-semibold text-slate-900">A4 Print Studio</h1>
+            <h1 className="text-base font-semibold text-slate-900">
+              এ৪ (A4) সাদাকালো প্রিন্ট ও পিডিএফ স্টুডিও
+            </h1>
             <p className="text-xs text-slate-500 tabular-nums">
-              {voters.length} voter {voters.length === 1 ? 'slip' : 'slips'} · {pages.length} A4{' '}
-              {pages.length === 1 ? 'page' : 'pages'} · {config.layout.toUpperCase()} portrait
+              {formatBnNumber(voters.length)}টি ভোটার স্লিপ · {formatBnNumber(pages.length)}টি এ৪ পাতা · প্রতি পাতায় সর্বোচ্চ ৪টি (স্থির আকার)
             </p>
           </div>
         </div>
@@ -185,67 +195,76 @@ export function A4PrintStudio({
             className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-red-50 hover:text-red-700 hover:border-red-200 transition-colors cursor-pointer whitespace-nowrap"
           >
             <Trash2 className="w-3.5 h-3.5" />
-            Clear Queue
+            তালিকা খালি করুন
           </button>
+
+          <button
+            type="button"
+            onClick={handleDownloadBwPdf}
+            disabled={generatingPdf}
+            className="inline-flex items-center gap-2 px-4 py-2 text-xs sm:text-sm font-semibold text-white bg-slate-900 rounded-lg hover:bg-black disabled:opacity-60 transition-colors cursor-pointer whitespace-nowrap"
+          >
+            {generatingPdf ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Download className="w-4 h-4" />
+            )}
+            {generatingPdf ? 'সাদাকালো PDF তৈরি হচ্ছে...' : 'সাদাকালো PDF ডাউনলোড'}
+          </button>
+
           <button
             type="button"
             onClick={handlePrint}
-            className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-emerald-700 rounded-lg hover:bg-emerald-800 transition-colors cursor-pointer whitespace-nowrap"
+            className="inline-flex items-center gap-2 px-4 py-2 text-xs sm:text-sm font-semibold text-white bg-emerald-700 rounded-lg hover:bg-emerald-800 transition-colors cursor-pointer whitespace-nowrap"
           >
             <Printer className="w-4 h-4" />
-            Print A4 Slips
+            {isMonochrome ? 'সাদাকালো এ৪ প্রিন্ট' : 'রঙিন এ৪ প্রিন্ট'}
           </button>
         </div>
       </div>
 
+      {pdfError && (
+        <div className="no-print p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-800">
+          {pdfError}
+        </div>
+      )}
+
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
         {/* Left Controls Panel (Hidden when printing) */}
         <aside className="no-print xl:col-span-4 bg-white border border-slate-200 rounded-xl p-5 space-y-5">
-          <div className="space-y-2.5">
-            <div className="flex items-center justify-between">
-              <h2 className="text-sm font-semibold text-slate-900">A4 Grid Density</h2>
-              <div className="flex items-center gap-1 p-0.5 bg-slate-100 rounded-md">
-                <button
-                  type="button"
-                  onClick={() => updateConfig({ language: 'bn' })}
-                  className={`px-2 py-1 text-xs font-medium rounded transition-colors cursor-pointer ${
-                    config.language === 'bn'
-                      ? 'bg-white text-slate-900 shadow-xs'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  বাংলা
-                </button>
-                <button
-                  type="button"
-                  onClick={() => updateConfig({ language: 'en' })}
-                  className={`px-2 py-1 text-xs font-medium rounded transition-colors cursor-pointer ${
-                    config.language === 'en'
-                      ? 'bg-white text-slate-900 shadow-xs'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  English
-                </button>
+          {/* Fixed 4-up & Color Mode info */}
+          <div className="space-y-3">
+            <h2 className="text-sm font-semibold text-slate-900">এ৪ প্রিন্ট ও পিডিএফ বিন্যাস</h2>
+            <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 text-xs text-slate-700 space-y-1">
+              <div className="font-semibold text-slate-900">
+                প্রতি পাতায় ৪টি স্লিপ (২×২ স্থির মাপ)
               </div>
+              <p className="text-[11px] text-slate-600 leading-relaxed">
+                ১, ২ বা ৩টি স্লিপ প্রিন্ট বা PDF ডাউনলোড করলেও প্রতিটি স্লিপের আকার (৯৭ × ১৩৮.৭ মিমি) অপরিবর্তিত থাকবে।
+              </p>
             </div>
 
             <div className="grid grid-cols-2 gap-2">
-              {LAYOUT_OPTIONS.map((opt) => {
-                const active = config.layout === opt.value;
+              {(
+                [
+                  { id: 'bw', label: 'সাদাকালো (ডিফল্ট)', note: 'লেজার প্রিন্ট ও PDF' },
+                  { id: 'color', label: 'রঙিন প্রিভিউ', note: 'কালার প্রিন্টারের জন্য' },
+                ] as { id: SlipPrintColorMode; label: string; note: string }[]
+              ).map((mode) => {
+                const active = (config.printColorMode || 'bw') === mode.id;
                 return (
                   <button
-                    key={opt.value}
+                    key={mode.id}
                     type="button"
-                    onClick={() => updateConfig({ layout: opt.value })}
-                    className={`p-2.5 text-left rounded-lg border transition-colors cursor-pointer ${
+                    onClick={() => updateConfig({ printColorMode: mode.id })}
+                    className={`p-2 text-left rounded-lg border transition-colors cursor-pointer ${
                       active
                         ? 'bg-emerald-50 border-emerald-600 text-emerald-950'
                         : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
                     }`}
                   >
-                    <div className="text-xs font-semibold">{opt.label}</div>
-                    <div className="text-[11px] text-slate-500 mt-0.5">{opt.gridNote}</div>
+                    <div className="text-xs font-semibold">{mode.label}</div>
+                    <div className="text-[11px] text-slate-500 mt-0.5">{mode.note}</div>
                   </button>
                 );
               })}
@@ -254,7 +273,7 @@ export function A4PrintStudio({
 
           <div className="pt-4 border-t border-slate-200 space-y-3">
             <div className="flex items-center justify-between gap-2">
-              <h2 className="text-sm font-semibold text-slate-900">Campaign Slip Header</h2>
+              <h2 className="text-sm font-semibold text-slate-900">স্লিপের প্রচারণা ও হেডার</h2>
               <button
                 type="button"
                 onClick={handleSaveCampaignDefaults}
@@ -262,7 +281,7 @@ export function A4PrintStudio({
                 className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700 hover:text-emerald-800 disabled:opacity-50 cursor-pointer whitespace-nowrap"
               >
                 <Save className="w-3.5 h-3.5" />
-                {savingDefaults ? 'Saving...' : 'Save Defaults'}
+                {savingDefaults ? 'সংরক্ষণ হচ্ছে...' : 'ডিফল্ট সংরক্ষণ'}
               </button>
             </div>
 
@@ -275,62 +294,117 @@ export function A4PrintStudio({
 
             <div className="space-y-2.5">
               <div>
-                <label className="block text-xs text-slate-600 mb-1">Election Name &amp; Year</label>
+                <label className="block text-xs text-slate-600 mb-1">নির্বাচনের শিরোনাম</label>
                 <input
                   type="text"
                   value={config.electionNameYear}
                   onChange={(e) => updateConfig({ electionNameYear: e.target.value })}
-                  placeholder="e.g. ত্রয়োদশ জাতীয় সংসদ নির্বাচন ২০২৬"
+                  placeholder="যেমন: ইউনিয়ন পরিষদ নির্বাচন - ২০২৬"
                   className="w-full px-2.5 py-1.5 text-xs bg-white border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-emerald-600"
                 />
               </div>
               <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <label className="block text-xs text-slate-600 mb-1">Post Name</label>
+                  <label className="block text-xs text-slate-600 mb-1">পদের নাম</label>
                   <input
                     type="text"
                     value={config.postName}
                     onChange={(e) => updateConfig({ postName: e.target.value })}
-                    placeholder="e.g. চেয়ারম্যান পদপ্রার্থী"
+                    placeholder="যেমন: চেয়ারম্যান পদপ্রার্থী"
                     className="w-full px-2.5 py-1.5 text-xs bg-white border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-emerald-600"
                   />
                 </div>
                 <div>
-                  <label className="block text-xs text-slate-600 mb-1">Symbol</label>
+                  <label className="block text-xs text-slate-600 mb-1">প্রতীকের নাম</label>
                   <input
                     type="text"
                     value={config.symbolName}
                     onChange={(e) => updateConfig({ symbolName: e.target.value })}
-                    placeholder="e.g. আনারস"
+                    placeholder="যেমন: কলম"
                     className="w-full px-2.5 py-1.5 text-xs bg-white border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-emerald-600"
                   />
                 </div>
               </div>
               <div>
-                <label className="block text-xs text-slate-600 mb-1">Candidate Name</label>
+                <label className="block text-xs text-slate-600 mb-1">প্রার্থীর নাম</label>
                 <input
                   type="text"
                   value={config.candidateName}
                   onChange={(e) => updateConfig({ candidateName: e.target.value })}
-                  placeholder="e.g. মোঃ আব্দুল করিম"
+                  placeholder="যেমন: মোঃ মোস্তফা কামাল"
                   className="w-full px-2.5 py-1.5 text-xs bg-white border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-emerald-600"
                 />
               </div>
               <div>
-                <label className="block text-xs text-slate-600 mb-1">Footer Note</label>
+                <label className="block text-xs text-slate-600 mb-1">স্লিপের শেষ ব্যানার লেখা</label>
                 <input
                   type="text"
                   value={config.footerNote}
                   onChange={(e) => updateConfig({ footerNote: e.target.value })}
-                  placeholder="Optional voter reminder line"
+                  placeholder="যেমন: মূল্যবান ভোট ও দোয়া চাই"
                   className="w-full px-2.5 py-1.5 text-xs bg-white border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-emerald-600"
                 />
+              </div>
+
+              {/* Candidate & Symbol Image Uploaders */}
+              <div className="grid grid-cols-2 gap-2 pt-1">
+                <div className="border border-slate-200 rounded-lg p-2 space-y-1.5">
+                  <div className="flex items-center justify-between text-[11px] font-medium text-slate-700">
+                    <span>প্রার্থীর ছবি</span>
+                    {config.candidatePhotoUrl && (
+                      <button
+                        type="button"
+                        onClick={() => updateConfig({ candidatePhotoUrl: '' })}
+                        className="text-red-600 hover:text-red-700 cursor-pointer"
+                        title="ছবি সরান"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+                  <label className="flex items-center justify-center gap-1.5 px-2 py-1.5 text-[11px] font-medium text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-md hover:bg-emerald-100 cursor-pointer">
+                    <ImagePlus className="w-3.5 h-3.5" />
+                    <span>{config.candidatePhotoUrl ? 'পরিবর্তন' : 'আপলোড'}</span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={(e) => handlePhotoUpload(e, 'candidatePhotoUrl')}
+                      className="sr-only"
+                    />
+                  </label>
+                </div>
+
+                <div className="border border-slate-200 rounded-lg p-2 space-y-1.5">
+                  <div className="flex items-center justify-between text-[11px] font-medium text-slate-700">
+                    <span>প্রতীকের ছবি</span>
+                    {config.symbolPhotoUrl && (
+                      <button
+                        type="button"
+                        onClick={() => updateConfig({ symbolPhotoUrl: '' })}
+                        className="text-red-600 hover:text-red-700 cursor-pointer"
+                        title="ছবি সরান"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+                  <label className="flex items-center justify-center gap-1.5 px-2 py-1.5 text-[11px] font-medium text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-md hover:bg-emerald-100 cursor-pointer">
+                    <ImagePlus className="w-3.5 h-3.5" />
+                    <span>{config.symbolPhotoUrl ? 'পরিবর্তন' : 'আপলোড'}</span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={(e) => handlePhotoUpload(e, 'symbolPhotoUrl')}
+                      className="sr-only"
+                    />
+                  </label>
+                </div>
               </div>
             </div>
           </div>
 
           <div className="pt-4 border-t border-slate-200 space-y-2.5">
-            <h2 className="text-sm font-semibold text-slate-900">Visible Slip Fields</h2>
+            <h2 className="text-sm font-semibold text-slate-900">স্লিপের ঐচ্ছিক তথ্য</h2>
             <div className="grid grid-cols-2 gap-y-2 gap-x-3 text-xs text-slate-700">
               <label className="inline-flex items-center gap-2 cursor-pointer">
                 <input
@@ -339,16 +413,7 @@ export function A4PrintStudio({
                   onChange={(e) => updateConfig({ showFatherMother: e.target.checked })}
                   className="rounded border-slate-300 text-emerald-700 focus:ring-emerald-600"
                 />
-                Father &amp; Mother
-              </label>
-              <label className="inline-flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={config.showDob}
-                  onChange={(e) => updateConfig({ showDob: e.target.checked })}
-                  className="rounded border-slate-300 text-emerald-700 focus:ring-emerald-600"
-                />
-                Date of Birth
+                পিতা ও মাতার নাম
               </label>
               <label className="inline-flex items-center gap-2 cursor-pointer">
                 <input
@@ -357,43 +422,16 @@ export function A4PrintStudio({
                   onChange={(e) => updateConfig({ showAddress: e.target.checked })}
                   className="rounded border-slate-300 text-emerald-700 focus:ring-emerald-600"
                 />
-                Address
-              </label>
-              <label className="inline-flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={config.showOccupation}
-                  onChange={(e) => updateConfig({ showOccupation: e.target.checked })}
-                  className="rounded border-slate-300 text-emerald-700 focus:ring-emerald-600"
-                />
-                Occupation
-              </label>
-              <label className="inline-flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={config.showCenterAreaCode}
-                  onChange={(e) => updateConfig({ showCenterAreaCode: e.target.checked })}
-                  className="rounded border-slate-300 text-emerald-700 focus:ring-emerald-600"
-                />
-                Area Code
-              </label>
-              <label className="inline-flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={config.showCutGuides}
-                  onChange={(e) => updateConfig({ showCutGuides: e.target.checked })}
-                  className="rounded border-slate-300 text-emerald-700 focus:ring-emerald-600"
-                />
-                Cut Guides
+                ঠিকানা
               </label>
             </div>
           </div>
 
           <div className="pt-4 border-t border-slate-200 space-y-2">
             <h2 className="text-sm font-semibold text-slate-900">
-              Queued Voters ({voters.length})
+              প্রিন্ট তালিকায় থাকা ভোটার ({formatBnNumber(voters.length)})
             </h2>
-            <div className="max-h-48 overflow-y-auto divide-y divide-slate-100 border border-slate-200 rounded-lg">
+            <div className="max-h-56 overflow-y-auto divide-y divide-slate-100 border border-slate-200 rounded-lg">
               {voters.map((v) => (
                 <div
                   key={v.id}
@@ -406,191 +444,99 @@ export function A4PrintStudio({
                       </span>
                       {v.name}
                     </div>
-                    <div className="text-[11px] font-mono text-slate-500 tabular-nums truncate">
-                      {v.voterNo}
+                    <div className="text-[11px] text-slate-500 truncate">
+                      ভবন: {v.buildingName || '—'} · কক্ষ: {v.roomNumber || '—'}
                     </div>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => onRemoveVoter(v.id)}
-                    aria-label={`Remove ${v.name} from print queue`}
-                    className="p-1 text-slate-400 hover:text-red-600 transition-colors cursor-pointer shrink-0"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
+                  <div className="flex items-center gap-1 shrink-0">
+                    {onShareVoter && (
+                      <button
+                        type="button"
+                        onClick={() => onShareVoter(v)}
+                        title="রঙিন ছবি শেয়ার করুন"
+                        className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-md hover:bg-emerald-100 transition-colors cursor-pointer"
+                      >
+                        <Share2 className="w-3 h-3" />
+                        রঙিন শেয়ার
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => onRemoveVoter(v.id)}
+                      aria-label={`${v.name}-কে তালিকা থেকে সরান`}
+                      className="p-1 text-slate-400 hover:text-red-600 transition-colors cursor-pointer shrink-0"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
           </div>
         </aside>
 
-        {/* Right A4 Sheet Preview & Print Output */}
+        {/* Right A4 Sheet Preview & Print Output (Always 2x2 Grid so 1/2/3 slips never change size) */}
         <section className="xl:col-span-8 space-y-6">
           <div className="print-only-root space-y-6">
-            {pages.map((pageVoters, pageIdx) => {
-              const gridClass =
-                config.layout === '1-up'
-                  ? 'grid-cols-1'
-                  : 'grid-cols-2';
+            {pages.map((pageVoters, pageIdx) => (
+              <div key={pageIdx} className="a4-page-wrapper space-y-2 print:space-y-0">
+                <div className="no-print flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500 px-1">
+                  <span className="font-medium">
+                    এ৪ পাতা {formatBnNumber(pageIdx + 1)} / {formatBnNumber(pages.length)} (
+                    {isMonochrome ? 'সাদাকালো প্রিন্ট ও PDF' : 'রঙিন প্রিভিউ'})
+                  </span>
+                  <span className="tabular-nums">
+                    ২১০ মিমি × ২৯৭ মিমি · ২×২ স্থির মাপ ({formatBnNumber(pageVoters.length)}/৪টি স্লিপ)
+                  </span>
+                </div>
 
-              const slipSpacingClass =
-                config.layout === '8-up'
-                  ? 'p-2.5 text-[10.5px] leading-snug'
-                  : config.layout === '6-up'
-                  ? 'p-3 text-[11.5px] leading-snug'
-                  : config.layout === '4-up'
-                  ? 'p-4 text-[12.5px] leading-normal'
-                  : 'p-6 text-sm leading-relaxed';
-
-              return (
-                <div key={pageIdx} className="space-y-2">
-                  <div className="no-print flex items-center justify-between text-xs text-slate-500 px-1">
-                    <span className="font-medium">
-                      A4 Sheet {pageIdx + 1} of {pages.length}
-                    </span>
-                    <span className="tabular-nums">210mm × 297mm · Portrait</span>
-                  </div>
-
-                  <div className="a4-page-sheet bg-white border border-slate-300 shadow-xs mx-auto w-full max-w-[210mm] p-[6mm] print:p-0">
-                    <div
-                      className={`grid ${gridClass} ${
-                        config.showCutGuides ? 'gap-[3mm]' : 'gap-[4mm]'
-                      }`}
-                    >
-                      {pageVoters.map((voter) => (
-                        <article
-                          key={voter.id}
-                          className={`a4-slip-card bg-white text-black ${slipSpacingClass} ${
-                            config.showCutGuides
-                              ? 'border border-dashed border-slate-500 print:border-black'
-                              : 'border border-slate-800'
-                          }`}
-                        >
-                          {/* Campaign Header */}
-                          <div className="border-b border-black pb-1.5 mb-2 text-center space-y-0.5">
-                            {config.electionNameYear ? (
-                              <div className="font-bold text-[1.05em] tracking-tight">
-                                {config.electionNameYear}
-                              </div>
-                            ) : (
-                              <div className="font-bold text-[1.05em] tracking-tight">
-                                {t.slipTitle}
-                              </div>
-                            )}
-
-                            {(config.candidateName || config.postName || config.symbolName) && (
-                              <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-0.5 text-[0.92em]">
-                                {config.postName && (
-                                  <span className="font-medium">{config.postName}</span>
-                                )}
-                                {config.candidateName && (
-                                  <span className="font-bold">{config.candidateName}</span>
-                                )}
-                                {config.symbolName && (
-                                  <span className="border border-black px-1.5 py-0.25 font-semibold">
-                                    {t.symbol}: {config.symbolName}
-                                  </span>
-                                )}
-                              </div>
-                            )}
-                          </div>
-
-                          {/* Serial & Voter Number Highlight Row */}
-                          <div className="flex items-center justify-between gap-2 bg-slate-100 print:bg-slate-100 border border-black px-2 py-1 mb-2 font-mono tabular-nums">
-                            <div>
-                              <span className="font-sans font-semibold mr-1">{t.serial}:</span>
-                              <span className="font-bold text-[1.1em]">{voter.serialNo}</span>
-                            </div>
-                            <div className="text-right">
-                              <span className="font-sans font-semibold mr-1">{t.voterNo}:</span>
-                              <span className="font-bold">{voter.voterNo}</span>
-                            </div>
-                          </div>
-
-                          {/* Voter Identity Details */}
-                          <div className="space-y-1">
-                            <div className="flex items-baseline gap-1.5">
-                              <span className="font-semibold shrink-0">{t.name}:</span>
-                              <span className="font-bold text-[1.05em]">{voter.name}</span>
-                            </div>
-
-                            {config.showFatherMother && (
-                              <>
-                                <div className="flex items-baseline gap-1.5">
-                                  <span className="font-semibold shrink-0">{t.father}:</span>
-                                  <span>{voter.fatherName || '—'}</span>
-                                </div>
-                                <div className="flex items-baseline gap-1.5">
-                                  <span className="font-semibold shrink-0">{t.mother}:</span>
-                                  <span>{voter.motherName || '—'}</span>
-                                </div>
-                              </>
-                            )}
-
-                            <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
-                              {config.showDob && (
-                                <div className="flex items-baseline gap-1">
-                                  <span className="font-semibold">{t.dob}:</span>
-                                  <span className="font-mono tabular-nums">
-                                    {voter.dateOfBirth || '—'}
-                                  </span>
-                                </div>
-                              )}
-                              <div className="flex items-baseline gap-1">
-                                <span className="font-semibold">{t.gender}:</span>
-                                <span>{voter.gender || '—'}</span>
-                              </div>
-                              {config.showOccupation && voter.occupation && (
-                                <div className="flex items-baseline gap-1">
-                                  <span className="font-semibold">{t.occupation}:</span>
-                                  <span>{voter.occupation}</span>
-                                </div>
-                              )}
-                            </div>
-
-                            {/* Polling Center Box */}
-                            <div className="mt-1.5 pt-1.5 border-t border-slate-400 print:border-black space-y-0.5">
-                              <div className="flex items-baseline gap-1.5">
-                                <span className="font-semibold shrink-0">{t.center}:</span>
-                                <span className="font-bold">{voter.centerName}</span>
-                              </div>
-                              <div className="flex flex-wrap items-baseline justify-between gap-x-2 text-[0.9em]">
-                                <span>
-                                  {t.wardUnion}: {voter.union} · {voter.ward}
-                                </span>
-                                {config.showCenterAreaCode && voter.voterAreaCode && (
-                                  <span className="font-mono tabular-nums">
-                                    {t.areaCode}: {voter.voterAreaCode}
-                                  </span>
-                                )}
-                              </div>
-                              {config.showAddress && voter.address && (
-                                <div className="text-[0.9em]">
-                                  <span className="font-semibold">{t.address}: </span>
-                                  <span>{voter.address}</span>
-                                </div>
-                              )}
-                            </div>
-                          </div>
-
-                          {/* Optional Footer */}
-                          {config.footerNote && (
-                            <div className="mt-2 pt-1 border-t border-dotted border-slate-400 text-center text-[0.85em] text-slate-800 print:text-black flex items-center justify-center gap-1">
-                              {config.showCutGuides && (
-                                <Scissors className="no-print w-3 h-3 text-slate-400 shrink-0" />
-                              )}
-                              <span>{config.footerNote}</span>
-                            </div>
-                          )}
-                        </article>
-                      ))}
-                    </div>
+                <div className="a4-page-sheet bg-white border border-slate-300 shadow-xs mx-auto w-full max-w-[210mm] p-2.5 sm:p-[6mm] print:p-0">
+                  <div className="grid grid-cols-2 gap-2.5 sm:gap-3 print:gap-[4mm]">
+                    {pageVoters.map((voter) => (
+                      <div key={voter.id} className="relative group">
+                        <VoterSlipCard
+                          voter={voter}
+                          config={config}
+                          compact={true}
+                          monochrome={isMonochrome}
+                        />
+                        {onShareVoter && (
+                          <button
+                            type="button"
+                            onClick={() => onShareVoter(voter)}
+                            className="no-print absolute top-2 right-2 z-20 inline-flex items-center gap-1 px-2 py-1 text-[11px] font-semibold text-white bg-emerald-700/95 rounded-md shadow-sm hover:bg-emerald-800 transition-opacity cursor-pointer"
+                            title="এই স্লিপটি রঙিন ছবি হিসেবে শেয়ার করুন"
+                          >
+                            <Share2 className="w-3 h-3" />
+                            রঙিন শেয়ার
+                          </button>
+                        )}
+                      </div>
+                    ))}
                   </div>
                 </div>
-              );
-            })}
+              </div>
+            ))}
           </div>
         </section>
+      </div>
+
+      {/* Offscreen Monochrome Capture Nodes for Direct B&W A4 PDF Export */}
+      <div
+        aria-hidden="true"
+        className="no-print fixed -left-[9999px] top-0 pointer-events-none"
+      >
+        {voters.map((voter, idx) => (
+          <div
+            key={voter.id}
+            ref={(el) => {
+              bwCaptureRefs.current[idx] = el;
+            }}
+            className="w-[390px] bg-white p-0.5"
+          >
+            <VoterSlipCard voter={voter} config={config} compact={true} monochrome={true} />
+          </div>
+        ))}
       </div>
     </div>
   );

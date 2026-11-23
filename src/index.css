@@ -2,8 +2,8 @@
 
 @layer base {
   :root {
-    --font-sans: "Plus Jakarta Sans", "Noto Sans Bengali", system-ui, -apple-system, sans-serif;
-    --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --font-sans: "Hind Siliguri", system-ui, -apple-system, sans-serif;
+    --font-mono: "JetBrains Mono", "Hind Siliguri", ui-monospace, SFMono-Regular, Menlo, monospace;
   }
 
   html {
@@ -19,10 +19,18 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* Force exact color fidelity for Voter Slip previews & A4 printing */
+.voter-slip-print-exact,
+.voter-slip-print-exact * {
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+  color-adjust: exact !important;
+}
+
 /* A4 Paper Print Preview & Browser Print Layout */
 @page {
   size: A4 portrait;
-  margin: 8mm;
+  margin: 6mm;
 }
 
 @media print {
@@ -32,8 +40,8 @@
     color: #000000 !important;
     margin: 0 !important;
     padding: 0 !important;
-    -webkit-print-color-adjust: exact;
-    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
   }
 
   .no-print {
@@ -49,6 +57,16 @@
     background: #ffffff !important;
   }
 
+  .a4-page-wrapper {
+    page-break-after: always;
+    break-after: page;
+  }
+
+  .a4-page-wrapper:last-child {
+    page-break-after: auto;
+    break-after: auto;
+  }
+
   .a4-page-sheet {
     width: 100% !important;
     min-height: 0 !important;
@@ -56,13 +74,6 @@
     border: none !important;
     margin: 0 !important;
     padding: 0 !important;
-    page-break-after: always;
-    break-after: page;
-  }
-
-  .a4-page-sheet:last-child {
-    page-break-after: auto;
-    break-after: auto;
   }
 
   .a4-slip-card {

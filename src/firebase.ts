@@ -14,8 +14,17 @@ export const firebaseConfig = {
 export const FIRESTORE_DATABASE_ID =
   'ai-studio-android-fb596c9d-5629-4a3a-8081-7ebaf7f7dbe8';
 
-const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app, FIRESTORE_DATABASE_ID);
+export const SUPER_ADMIN_EMAIL = 'mohadebnogorcluster@gmail.com';
+
+export function isSuperAdminEmail(email: string | null | undefined): boolean {
+  return (email ?? '').trim().toLowerCase() === SUPER_ADMIN_EMAIL;
+}
+
+export const app = initializeApp(firebaseConfig);
+export const db = getFirestore(
+  app,
+  'ai-studio-android-fb596c9d-5629-4a3a-8081-7ebaf7f7dbe8'
+);
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });

@@ -34,7 +34,9 @@ export class ErrorBoundary extends React.Component<
 
     return {
       hasError: true,
-      errorMessage: parsed ? parsed.error : error.message || 'An unexpected error occurred.',
+      errorMessage: parsed
+        ? parsed.error
+        : error.message || 'একটি অপ্রত্যাশিত ত্রুটি ঘটেছে।',
       firestoreInfo: parsed,
     };
   }
@@ -55,7 +57,7 @@ export class ErrorBoundary extends React.Component<
               </div>
               <div className="space-y-1 min-w-0">
                 <h1 className="text-lg font-semibold text-slate-900">
-                  Unable to complete request
+                  অনুরোধটি সম্পন্ন করা যায়নি
                 </h1>
                 <p className="text-sm text-slate-600 break-words">
                   {this.state.errorMessage}
@@ -65,9 +67,9 @@ export class ErrorBoundary extends React.Component<
 
             {this.state.firestoreInfo && (
               <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs font-mono text-slate-700 space-y-1">
-                <div>Operation: {this.state.firestoreInfo.operationType}</div>
-                <div>Path: {this.state.firestoreInfo.path ?? 'N/A'}</div>
-                <div>User: {this.state.firestoreInfo.authInfo.email ?? 'Signed out'}</div>
+                <div>অপারেশন: {this.state.firestoreInfo.operationType}</div>
+                <div>পাথ: {this.state.firestoreInfo.path ?? 'প্রযোজ্য নয়'}</div>
+                <div>ব্যবহারকারী: {this.state.firestoreInfo.authInfo.email ?? 'সাইন আউট'}</div>
               </div>
             )}
 
@@ -75,10 +77,10 @@ export class ErrorBoundary extends React.Component<
               <button
                 type="button"
                 onClick={this.handleReset}
-                className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-slate-900 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
+                className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-emerald-800 rounded-lg hover:bg-emerald-900 transition-colors cursor-pointer"
               >
                 <RotateCcw className="w-4 h-4" />
-                Reload Application
+                পুনরায় লোড করুন
               </button>
             </div>
           </div>

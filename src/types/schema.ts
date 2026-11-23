@@ -1,9 +1,18 @@
+import type { Timestamp } from 'firebase/firestore';
+
+export type FirestoreDateValue =
+  | Timestamp
+  | { seconds: number; nanoseconds?: number }
+  | string
+  | null
+  | undefined;
+
 export type UserRequestStatus = 'pending' | 'approved' | 'blocked';
 
 export interface AdminUser {
   uid: string;
   email: string;
-  createdAt: string;
+  createdAt: FirestoreDateValue;
 }
 
 export interface PollingCenter {
@@ -19,8 +28,8 @@ export interface PollingCenter {
   maleCount: number;
   femaleCount: number;
   uploadedByUid: string;
-  createdAt: string;
-  updatedAt: string;
+  createdAt: FirestoreDateValue;
+  updatedAt: FirestoreDateValue;
 }
 
 export interface VoterRecord {
@@ -43,7 +52,26 @@ export interface VoterRecord {
   dateOfBirth: string;
   address: string;
   occupation: string;
-  createdAt: string;
+  buildingName?: string;
+  roomNumber?: string;
+  createdAt: FirestoreDateValue;
+}
+
+export interface SeatPlanRecord {
+  id: string;
+  centerId: string;
+  voterAreaCode: string;
+  ward: string;
+  centerName: string;
+  buildingName: string;
+  roomNumber: string;
+  gender: 'পুরুষ' | 'মহিলা';
+  startSerial: number;
+  endSerial: number;
+  updatedCount: number;
+  createdByUid: string;
+  createdAt: FirestoreDateValue;
+  updatedAt: FirestoreDateValue;
 }
 
 export interface UserRequest {
@@ -61,25 +89,27 @@ export interface UserRequest {
   postName?: string;
   candidateName?: string;
   symbolName?: string;
+  candidatePhotoUrl?: string;
+  symbolPhotoUrl?: string;
   status: UserRequestStatus;
-  createdAt: string;
-  updatedAt: string;
+  createdAt: FirestoreDateValue;
+  updatedAt: FirestoreDateValue;
 }
 
-export type SlipLayoutMode = '4-up' | '6-up' | '8-up' | '1-up';
+export type SlipLayoutMode = '4-up' | '2-up' | '1-up';
+export type SlipPrintColorMode = 'bw' | 'color';
 
 export interface SlipPrintConfig {
   layout: SlipLayoutMode;
+  printColorMode: SlipPrintColorMode;
   electionNameYear: string;
   postName: string;
   candidateName: string;
   symbolName: string;
+  candidatePhotoUrl: string;
+  symbolPhotoUrl: string;
   footerNote: string;
   showFatherMother: boolean;
-  showDob: boolean;
   showAddress: boolean;
-  showOccupation: boolean;
-  showCenterAreaCode: boolean;
   showCutGuides: boolean;
-  language: 'bn' | 'en';
 }

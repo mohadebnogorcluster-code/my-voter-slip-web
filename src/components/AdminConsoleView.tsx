@@ -5,6 +5,7 @@ import {
   getDocs,
   onSnapshot,
   query,
+  serverTimestamp,
   updateDoc,
   where,
   writeBatch,
@@ -25,10 +26,17 @@ import type {
   UserRequest,
   UserRequestStatus,
 } from '../types/schema';
-import { formatIsoDateShort } from '../utils/slipHelpers';
+import {
+  formatBnNumber,
+  formatIsoDateShort,
+  toFirestoreMillis,
+} from '../utils/slipHelpers';
+import { SeatPlanManager } from './SeatPlanManager';
 
 interface AdminConsoleViewProps {
   adminUid: string;
+  onCentersLoaded?: (centers: PollingCenter[]) => void;
+  onSeatPlanUpdated?: (centerId: string) => void;
 }
 
 interface RawVoterImportRow {
@@ -42,10 +50,24 @@ interface RawVoterImportRow {
   dateOfBirth?: string;
   address?: string;
   occupation?: string;
+  buildingName?: string;
+  roomNumber?: string;
 }
 
-export function AdminConsoleView({ adminUid }: AdminConsoleViewProps) {
-  const [activeTab, setActiveTab] = useState<'requests' | 'centers'>('requests');
+const REQUEST_STATUS_FILTERS: { id: 'all' | UserRequestStatus; label: string }[] = [
+  { id: 'all', label: 'সকল' },
+  { id: 'pending', label: 'অপেক্ষমাণ' },
+  { id: 'approved', label: 'অনুমোদিত' },
+  { id: 'blocked', label: 'স্থগিত' },
+];
+
+export function AdminConsoleView({
+  adminUid,
+  onCentersLoaded,
+  onSeatPlanUpdated,
+}: AdminConsoleViewProps) {
+  const [activeTab, setActiveTab] = useState<'requests' | 'centers' | 'seatPlans'>('requests');
+  const [seatPlanModalOpen, setSeatPlanModalOpen] = useState(false);
 
   // User Requests state
   const [requests, setRequests] = useState<UserRequest[]>([]);
@@ -85,7 +107,7 @@ export function AdminConsoleView({ adminUid }: AdminConsoleViewProps) {
           ...(d.data() as UserRequest),
           userId: d.id,
         }));
-        list.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+        list.sort((a, b) => toFirestoreMillis(b.updatedAt) - toFirestoreMillis(a.updatedAt));
         setRequests(list);
         setLoadingRequests(false);
       },
@@ -106,8 +128,9 @@ export function AdminConsoleView({ adminUid }: AdminConsoleViewProps) {
         id: d.id,
         ...(d.data() as Omit<PollingCenter, 'id'>),
       }));
-      list.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+      list.sort((a, b) => toFirestoreMillis(b.createdAt) - toFirestoreMillis(a.createdAt));
       setCenters(list);
+      onCentersLoaded?.(list);
     } catch (err) {
       handleFirestoreError(err, OperationType.LIST, 'centers_list');
     } finally {
@@ -125,7 +148,7 @@ export function AdminConsoleView({ adminUid }: AdminConsoleViewProps) {
     try {
       await updateDoc(doc(db, 'user_requests', userId), {
         status,
-        updatedAt: new Date().toISOString(),
+        updatedAt: serverTimestamp(),
       });
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, path);
@@ -173,7 +196,7 @@ export function AdminConsoleView({ adminUid }: AdminConsoleViewProps) {
     ) {
       setImportFeedback({
         type: 'error',
-        text: 'Complete all center fields and paste a valid JSON array of voters.',
+        text: 'অনুগ্রহ করে কেন্দ্রের সব প্রয়োজনীয় ঘর পূরণ করুন এবং সঠিক JSON তালিকা পেস্ট করুন।',
       });
       return;
     }
@@ -182,13 +205,13 @@ export function AdminConsoleView({ adminUid }: AdminConsoleViewProps) {
     try {
       const candidate = JSON.parse(impJsonText);
       if (!Array.isArray(candidate) || candidate.length === 0) {
-        throw new Error('JSON must be a non-empty array of voter objects.');
+        throw new Error('JSON অবশ্যই ভোটার তথ্যের একটি অ-শূন্য তালিকা (Array) হতে হবে।');
       }
       parsedRows = candidate;
     } catch (err) {
       setImportFeedback({
         type: 'error',
-        text: err instanceof Error ? err.message : 'Invalid JSON format.',
+        text: err instanceof Error ? err.message : 'JSON ফরম্যাট সঠিক নয়।',
       });
       return;
     }
@@ -236,6 +259,8 @@ export function AdminConsoleView({ adminUid }: AdminConsoleViewProps) {
           dateOfBirth: String(row.dateOfBirth ?? ''),
           address: String(row.address ?? ''),
           occupation: String(row.occupation ?? ''),
+          buildingName: String(row.buildingName ?? ''),
+          roomNumber: String(row.roomNumber ?? ''),
           createdAt: now,
         };
       });
@@ -273,7 +298,9 @@ export function AdminConsoleView({ adminUid }: AdminConsoleViewProps) {
 
       setImportFeedback({
         type: 'success',
-        text: `Imported "${impCenterName.trim()}" with ${voterPayloads.length} voter records.`,
+        text: `"${impCenterName.trim()}" কেন্দ্রে ${formatBnNumber(
+          voterPayloads.length
+        )} জন ভোটারের তথ্য সফলভাবে আপলোড হয়েছে।`,
       });
       setImpCenterName('');
       setImpAreaCode('');
@@ -311,13 +338,13 @@ export function AdminConsoleView({ adminUid }: AdminConsoleViewProps) {
     <div className="space-y-6">
       <div className="bg-white border border-slate-200 rounded-xl p-5 flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h1 className="text-lg font-semibold text-slate-900">Administrator Console</h1>
+          <h1 className="text-lg font-semibold text-slate-900">অ্যাডমিনিস্ট্রেটর কনসোল</h1>
           <p className="text-xs text-slate-600 mt-0.5">
-            Approve user activation requests and manage polling center datasets.
+            ব্যবহারকারীর সক্রিয়করণ আবেদন অনুমোদন করুন এবং ভোটকেন্দ্রের ডাটাবেস পরিচালনা করুন।
           </p>
         </div>
 
-        <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg">
+        <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg overflow-x-auto">
           <button
             type="button"
             onClick={() => setActiveTab('requests')}
@@ -327,7 +354,7 @@ export function AdminConsoleView({ adminUid }: AdminConsoleViewProps) {
                 : 'text-slate-600 hover:text-slate-900'
             }`}
           >
-            Activation Requests ({counts.pending} pending)
+            সক্রিয়করণের আবেদন ({formatBnNumber(counts.pending)}টি অপেক্ষমাণ)
           </button>
           <button
             type="button"
@@ -338,7 +365,18 @@ export function AdminConsoleView({ adminUid }: AdminConsoleViewProps) {
                 : 'text-slate-600 hover:text-slate-900'
             }`}
           >
-            Polling Centers ({centers.length})
+            ভোটকেন্দ্রসমূহ ({formatBnNumber(centers.length)})
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('seatPlans')}
+            className={`px-3.5 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer whitespace-nowrap ${
+              activeTab === 'seatPlans'
+                ? 'bg-white text-slate-900 shadow-xs'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            আসন বিন্যাস
           </button>
         </div>
       </div>
@@ -352,24 +390,24 @@ export function AdminConsoleView({ adminUid }: AdminConsoleViewProps) {
                 type="text"
                 value={requestSearch}
                 onChange={(e) => setRequestSearch(e.target.value)}
-                placeholder="Filter by name, phone, area, or TrxID..."
+                placeholder="নাম, মোবাইল, এলাকা বা TrxID দিয়ে খুঁজুন..."
                 className="w-full pl-9 pr-3 py-2 text-xs bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-600"
               />
             </div>
 
             <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg">
-              {(['all', 'pending', 'approved', 'blocked'] as const).map((st) => (
+              {REQUEST_STATUS_FILTERS.map((st) => (
                 <button
-                  key={st}
+                  key={st.id}
                   type="button"
-                  onClick={() => setStatusFilter(st)}
-                  className={`px-3 py-1 text-xs font-medium rounded-md capitalize transition-colors cursor-pointer whitespace-nowrap ${
-                    statusFilter === st
+                  onClick={() => setStatusFilter(st.id)}
+                  className={`px-3 py-1 text-xs font-medium rounded-md transition-colors cursor-pointer whitespace-nowrap ${
+                    statusFilter === st.id
                       ? 'bg-white text-slate-900 shadow-xs'
                       : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
-                  {st} ({counts[st]})
+                  {st.label} ({formatBnNumber(counts[st.id])})
                 </button>
               ))}
             </div>
@@ -378,23 +416,23 @@ export function AdminConsoleView({ adminUid }: AdminConsoleViewProps) {
           {loadingRequests ? (
             <div className="p-12 flex items-center justify-center gap-2 text-sm text-slate-500">
               <Loader2 className="w-5 h-5 animate-spin text-emerald-700" />
-              Loading requests...
+              আবেদন তালিকা লোড হচ্ছে...
             </div>
           ) : filteredRequests.length === 0 ? (
             <div className="p-12 text-center text-sm text-slate-500">
-              No activation requests match your filter.
+              আপনার ফিল্টার অনুযায়ী কোনো আবেদন পাওয়া যায়নি।
             </div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-left border-collapse">
                 <thead>
-                  <tr className="border-b border-slate-200 bg-slate-50 text-[11px] font-semibold text-slate-600">
-                    <th className="py-2.5 px-4">Applicant</th>
-                    <th className="py-2.5 px-3">Area</th>
-                    <th className="py-2.5 px-3">Payment Note</th>
-                    <th className="py-2.5 px-3">Status</th>
-                    <th className="py-2.5 px-3">Updated</th>
-                    <th className="py-2.5 px-4 text-right">Actions</th>
+                  <tr className="border-b border-slate-200 bg-slate-50 text-xs font-semibold text-slate-700">
+                    <th className="py-2.5 px-4">আবেদনকারী</th>
+                    <th className="py-2.5 px-3">এলাকা</th>
+                    <th className="py-2.5 px-3">পেমেন্ট নোট</th>
+                    <th className="py-2.5 px-3">অবস্থা</th>
+                    <th className="py-2.5 px-3">হালনাগাদ</th>
+                    <th className="py-2.5 px-4 text-right">পদক্ষেপ</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-200 text-xs">
@@ -406,7 +444,7 @@ export function AdminConsoleView({ adminUid }: AdminConsoleViewProps) {
                       </td>
                       <td className="py-3 px-3 text-slate-700">
                         <div>
-                          {req.union}, Ward {req.ward}
+                          {req.union}, ওয়ার্ড {req.ward}
                         </div>
                         <div className="text-[11px] text-slate-500">
                           {req.upazila} · {req.district} · {req.division}
@@ -416,26 +454,26 @@ export function AdminConsoleView({ adminUid }: AdminConsoleViewProps) {
                         {req.paymentNote}
                       </td>
                       <td className="py-3 px-3 whitespace-nowrap">
-                        <span className="inline-flex items-center gap-1.5 font-medium capitalize">
+                        <span className="inline-flex items-center gap-1.5 font-medium">
                           {req.status === 'approved' ? (
                             <>
                               <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                              <span className="text-emerald-800">Approved</span>
+                              <span className="text-emerald-800">অনুমোদিত</span>
                             </>
                           ) : req.status === 'blocked' ? (
                             <>
                               <Ban className="w-3.5 h-3.5 text-red-600" />
-                              <span className="text-red-700">Blocked</span>
+                              <span className="text-red-700">স্থগিত</span>
                             </>
                           ) : (
                             <>
                               <Clock className="w-3.5 h-3.5 text-amber-600" />
-                              <span className="text-amber-800">Pending</span>
+                              <span className="text-amber-800">অপেক্ষমাণ</span>
                             </>
                           )}
                         </span>
                       </td>
-                      <td className="py-3 px-3 font-mono tabular-nums text-slate-500 whitespace-nowrap">
+                      <td className="py-3 px-3 tabular-nums text-slate-500 whitespace-nowrap">
                         {formatIsoDateShort(req.updatedAt)}
                       </td>
                       <td className="py-3 px-4 text-right whitespace-nowrap">
@@ -447,7 +485,7 @@ export function AdminConsoleView({ adminUid }: AdminConsoleViewProps) {
                               onClick={() => handleUpdateUserStatus(req.userId, 'approved')}
                               className="px-2.5 py-1 text-xs font-medium text-white bg-emerald-700 rounded-md hover:bg-emerald-800 disabled:opacity-50 cursor-pointer"
                             >
-                              Approve
+                              অনুমোদন দিন
                             </button>
                           )}
                           {req.status !== 'blocked' && (
@@ -457,7 +495,7 @@ export function AdminConsoleView({ adminUid }: AdminConsoleViewProps) {
                               onClick={() => handleUpdateUserStatus(req.userId, 'blocked')}
                               className="px-2.5 py-1 text-xs font-medium text-red-700 bg-red-50 border border-red-200 rounded-md hover:bg-red-100 disabled:opacity-50 cursor-pointer"
                             >
-                              Block
+                              ব্লক করুন
                             </button>
                           )}
                           {req.status !== 'pending' && (
@@ -467,7 +505,7 @@ export function AdminConsoleView({ adminUid }: AdminConsoleViewProps) {
                               onClick={() => handleUpdateUserStatus(req.userId, 'pending')}
                               className="px-2.5 py-1 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-md hover:bg-slate-100 disabled:opacity-50 cursor-pointer"
                             >
-                              Set Pending
+                              অপেক্ষমাণ রাখুন
                             </button>
                           )}
                         </div>
@@ -479,6 +517,15 @@ export function AdminConsoleView({ adminUid }: AdminConsoleViewProps) {
             </div>
           )}
         </section>
+      ) : activeTab === 'seatPlans' ? (
+        <SeatPlanManager
+          centers={centers}
+          currentUserId={adminUid}
+          isModalOpen={seatPlanModalOpen}
+          onOpenModal={() => setSeatPlanModalOpen(true)}
+          onCloseModal={() => setSeatPlanModalOpen(false)}
+          onSeatPlanUpdated={onSeatPlanUpdated}
+        />
       ) : (
         <div className="space-y-4">
           <div className="flex justify-end">
@@ -488,7 +535,7 @@ export function AdminConsoleView({ adminUid }: AdminConsoleViewProps) {
               className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-emerald-700 rounded-lg hover:bg-emerald-800 transition-colors cursor-pointer"
             >
               <Upload className="w-3.5 h-3.5" />
-              {showImporter ? 'Close JSON Importer' : 'Import Center Voter JSON'}
+              {showImporter ? 'JSON আমদানি প্যানেল বন্ধ করুন' : 'নতুন কেন্দ্রের JSON আপলোড করুন'}
             </button>
           </div>
 
@@ -499,11 +546,12 @@ export function AdminConsoleView({ adminUid }: AdminConsoleViewProps) {
             >
               <div>
                 <h2 className="text-sm font-semibold text-slate-900">
-                  Import Polling Center &amp; Voter Records
+                  ভোটকেন্দ্র ও ভোটার তালিকা আমদানি করুন
                 </h2>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Writes directly to <code className="font-mono">centers_list</code> and{' '}
-                  <code className="font-mono">voters_data</code> using the Android schema.
+                  অ্যান্ড্রয়েড অ্যাপের মূল ডাটাবেস কাঠামো অনুযায়ী সরাসরি{' '}
+                  <code className="font-mono">centers_list</code> ও{' '}
+                  <code className="font-mono">voters_data</code>-তে সংরক্ষণ হবে।
                 </p>
               </div>
 
@@ -526,7 +574,7 @@ export function AdminConsoleView({ adminUid }: AdminConsoleViewProps) {
                   required
                   value={impDivision}
                   onChange={(e) => setImpDivision(e.target.value)}
-                  placeholder="Division *"
+                  placeholder="বিভাগ *"
                   className="px-3 py-2 text-xs border border-slate-300 rounded-lg"
                 />
                 <input
@@ -534,7 +582,7 @@ export function AdminConsoleView({ adminUid }: AdminConsoleViewProps) {
                   required
                   value={impDistrict}
                   onChange={(e) => setImpDistrict(e.target.value)}
-                  placeholder="District *"
+                  placeholder="জেলা *"
                   className="px-3 py-2 text-xs border border-slate-300 rounded-lg"
                 />
                 <input
@@ -542,7 +590,7 @@ export function AdminConsoleView({ adminUid }: AdminConsoleViewProps) {
                   required
                   value={impUpazila}
                   onChange={(e) => setImpUpazila(e.target.value)}
-                  placeholder="Upazila *"
+                  placeholder="উপজেলা *"
                   className="px-3 py-2 text-xs border border-slate-300 rounded-lg"
                 />
                 <input
@@ -550,7 +598,7 @@ export function AdminConsoleView({ adminUid }: AdminConsoleViewProps) {
                   required
                   value={impUnion}
                   onChange={(e) => setImpUnion(e.target.value)}
-                  placeholder="Union *"
+                  placeholder="ইউনিয়ন / পৌরসভা *"
                   className="px-3 py-2 text-xs border border-slate-300 rounded-lg"
                 />
                 <input
@@ -558,7 +606,7 @@ export function AdminConsoleView({ adminUid }: AdminConsoleViewProps) {
                   required
                   value={impWard}
                   onChange={(e) => setImpWard(e.target.value)}
-                  placeholder="Ward *"
+                  placeholder="ওয়ার্ড *"
                   className="px-3 py-2 text-xs border border-slate-300 rounded-lg"
                 />
                 <input
@@ -566,21 +614,21 @@ export function AdminConsoleView({ adminUid }: AdminConsoleViewProps) {
                   required
                   value={impCenterName}
                   onChange={(e) => setImpCenterName(e.target.value)}
-                  placeholder="Polling Center Name *"
+                  placeholder="ভোটকেন্দ্রের নাম *"
                   className="sm:col-span-2 px-3 py-2 text-xs border border-slate-300 rounded-lg"
                 />
                 <input
                   type="text"
                   value={impAreaCode}
                   onChange={(e) => setImpAreaCode(e.target.value)}
-                  placeholder="Voter Area Code"
+                  placeholder="ভোটার এলাকা কোড"
                   className="px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg"
                 />
               </div>
 
               <div>
                 <label className="block text-xs font-medium text-slate-700 mb-1">
-                  Voter Array JSON (fields: serialNo, name, voterNo, fatherName, motherName, gender, dateOfBirth, address, occupation)
+                  ভোটার তালিকা JSON (ফিল্ডসমূহ: serialNo, name, voterNo, fatherName, motherName, gender, dateOfBirth, address, occupation)
                 </label>
                 <textarea
                   rows={5}
@@ -596,9 +644,9 @@ export function AdminConsoleView({ adminUid }: AdminConsoleViewProps) {
                 <button
                   type="submit"
                   disabled={importing}
-                  className="px-4 py-2 text-xs font-semibold text-white bg-slate-900 rounded-lg hover:bg-slate-800 disabled:opacity-50 cursor-pointer"
+                  className="px-4 py-2 text-xs font-semibold text-white bg-emerald-800 rounded-lg hover:bg-emerald-900 disabled:opacity-50 cursor-pointer"
                 >
-                  {importing ? 'Uploading Batches...' : 'Upload Center & Voters'}
+                  {importing ? 'আপলোড হচ্ছে...' : 'কেন্দ্র ও ভোটার তালিকা আপলোড করুন'}
                 </button>
               </div>
             </form>
@@ -608,23 +656,23 @@ export function AdminConsoleView({ adminUid }: AdminConsoleViewProps) {
             {loadingCenters ? (
               <div className="p-12 flex items-center justify-center gap-2 text-sm text-slate-500">
                 <Loader2 className="w-5 h-5 animate-spin text-emerald-700" />
-                Loading polling centers...
+                ভোটকেন্দ্রের তালিকা লোড হচ্ছে...
               </div>
             ) : centers.length === 0 ? (
               <div className="p-12 text-center text-sm text-slate-500">
-                No polling centers uploaded yet.
+                এখনো কোনো ভোটকেন্দ্র আপলোড করা হয়নি।
               </div>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-left border-collapse">
                   <thead>
-                    <tr className="border-b border-slate-200 bg-slate-50 text-[11px] font-semibold text-slate-600">
-                      <th className="py-2.5 px-4">Center Name</th>
-                      <th className="py-2.5 px-3">Administrative Area</th>
-                      <th className="py-2.5 px-3 text-right">Total</th>
-                      <th className="py-2.5 px-3 text-right">Male</th>
-                      <th className="py-2.5 px-3 text-right">Female</th>
-                      <th className="py-2.5 px-4 text-right">Actions</th>
+                    <tr className="border-b border-slate-200 bg-slate-50 text-xs font-semibold text-slate-700">
+                      <th className="py-2.5 px-4">ভোটকেন্দ্রের নাম</th>
+                      <th className="py-2.5 px-3">প্রশাসনিক এলাকা</th>
+                      <th className="py-2.5 px-3 text-right">মোট ভোটার</th>
+                      <th className="py-2.5 px-3 text-right">পুরুষ</th>
+                      <th className="py-2.5 px-3 text-right">মহিলা</th>
+                      <th className="py-2.5 px-4 text-right">পদক্ষেপ</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-200 text-xs">
@@ -634,26 +682,26 @@ export function AdminConsoleView({ adminUid }: AdminConsoleViewProps) {
                           <div className="font-semibold text-slate-900">{c.centerName}</div>
                           {c.voterAreaCode && (
                             <div className="text-[11px] font-mono text-slate-500">
-                              Code: {c.voterAreaCode}
+                              কোড: {c.voterAreaCode}
                             </div>
                           )}
                         </td>
                         <td className="py-3 px-3 text-slate-700">
                           <div>
-                            {c.union}, Ward {c.ward}
+                            {c.union}, ওয়ার্ড {c.ward}
                           </div>
                           <div className="text-[11px] text-slate-500">
                             {c.upazila} · {c.district} · {c.division}
                           </div>
                         </td>
                         <td className="py-3 px-3 text-right font-mono tabular-nums font-semibold text-slate-900">
-                          {c.totalVoters.toLocaleString()}
+                          {formatBnNumber(c.totalVoters)}
                         </td>
                         <td className="py-3 px-3 text-right font-mono tabular-nums text-slate-700">
-                          {c.maleCount.toLocaleString()}
+                          {formatBnNumber(c.maleCount)}
                         </td>
                         <td className="py-3 px-3 text-right font-mono tabular-nums text-slate-700">
-                          {c.femaleCount.toLocaleString()}
+                          {formatBnNumber(c.femaleCount)}
                         </td>
                         <td className="py-3 px-4 text-right whitespace-nowrap">
                           {confirmDeleteId === c.id ? (
@@ -664,14 +712,14 @@ export function AdminConsoleView({ adminUid }: AdminConsoleViewProps) {
                                 onClick={() => handleDeleteCenter(c.id)}
                                 className="px-2.5 py-1 text-xs font-medium text-white bg-red-600 rounded-md hover:bg-red-700 disabled:opacity-50 cursor-pointer"
                               >
-                                {deletingCenterId === c.id ? 'Deleting...' : 'Confirm'}
+                                {deletingCenterId === c.id ? 'মুছে ফেলা হচ্ছে...' : 'নিশ্চিত করুন'}
                               </button>
                               <button
                                 type="button"
                                 onClick={() => setConfirmDeleteId(null)}
                                 className="px-2 py-1 text-xs text-slate-600 border border-slate-200 rounded-md hover:bg-slate-100 cursor-pointer"
                               >
-                                Cancel
+                                বাতিল
                               </button>
                             </div>
                           ) : (
@@ -681,7 +729,7 @@ export function AdminConsoleView({ adminUid }: AdminConsoleViewProps) {
                               className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-red-700 bg-red-50 border border-red-200 rounded-md hover:bg-red-100 cursor-pointer"
                             >
                               <Trash2 className="w-3.5 h-3.5" />
-                              Delete
+                              মুছুন
                             </button>
                           )}
                         </td>
