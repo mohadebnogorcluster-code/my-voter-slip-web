@@ -1,11 +1,13 @@
 import React, { useState } from 'react';
 import { doc, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
 import type { User } from 'firebase/auth';
-import { CheckCircle2, Clock, Ban, LogOut, Send, AlertCircle } from 'lucide-react';
+import { CheckCircle2, Clock, Ban, LogOut, Send, AlertCircle, Sparkles } from 'lucide-react';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import type { UserRequest } from '../types/schema';
 import { formatIsoDateShort, getOrCreateWebDeviceId } from '../utils/slipHelpers';
 import { DeveloperFooter, SITE_LOGO_SRC } from './DeveloperFooter';
+import { BdLocationSelector, type BdLocationValue } from './BdLocationSelector';
+import { PublicDemoSection } from './PublicDemoSection';
 
 interface ActivationViewProps {
   user: User;
@@ -16,11 +18,14 @@ interface ActivationViewProps {
 export function ActivationView({ user, existingRequest, onSignOut }: ActivationViewProps) {
   const [name, setName] = useState(existingRequest?.name || user.displayName || '');
   const [phone, setPhone] = useState(existingRequest?.phone || '');
-  const [division, setDivision] = useState(existingRequest?.division || '');
-  const [district, setDistrict] = useState(existingRequest?.district || '');
-  const [upazila, setUpazila] = useState(existingRequest?.upazila || '');
-  const [union, setUnion] = useState(existingRequest?.union || '');
-  const [ward, setWard] = useState(existingRequest?.ward || '');
+  const [location, setLocation] = useState<BdLocationValue>({
+    division: existingRequest?.division || '',
+    district: existingRequest?.district || '',
+    upazila: existingRequest?.upazila || '',
+    union: existingRequest?.union || '',
+    ward: existingRequest?.ward || '',
+    centerName: existingRequest?.centerName || '',
+  });
   const [paymentNote, setPaymentNote] = useState(existingRequest?.paymentNote || '');
   const [electionNameYear, setElectionNameYear] = useState(
     existingRequest?.electionNameYear || ''
@@ -34,6 +39,7 @@ export function ActivationView({ user, existingRequest, onSignOut }: ActivationV
     null
   );
   const [editingPending, setEditingPending] = useState(!existingRequest);
+  const [showDemo, setShowDemo] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -42,16 +48,17 @@ export function ActivationView({ user, existingRequest, onSignOut }: ActivationV
     if (
       !name.trim() ||
       !phone.trim() ||
-      !division.trim() ||
-      !district.trim() ||
-      !upazila.trim() ||
-      !union.trim() ||
-      !ward.trim() ||
+      !location.division.trim() ||
+      !location.district.trim() ||
+      !location.upazila.trim() ||
+      !location.union.trim() ||
+      !location.ward.trim() ||
+      !location.centerName.trim() ||
       !paymentNote.trim()
     ) {
       setFeedback({
         type: 'error',
-        text: 'অনুগ্রহ করে আপনার নাম, মোবাইল নম্বর, প্রশাসনিক এলাকা এবং পেমেন্ট সংক্রান্ত সব বাধ্যতামূলক ঘর পূরণ করুন।',
+        text: 'অনুগ্রহ করে আপনার নাম, মোবাইল নম্বর, বিভাগ-জেলা-উপজেলা, ইউনিয়ন, ওয়ার্ড, ভোট কেন্দ্র এবং পেমেন্ট সংক্রান্ত সব বাধ্যতামূলক ঘর পূরণ করুন।',
       });
       return;
     }
@@ -71,11 +78,12 @@ export function ActivationView({ user, existingRequest, onSignOut }: ActivationV
       userId: user.uid,
       name: name.trim(),
       phone: phone.trim(),
-      division: division.trim(),
-      district: district.trim(),
-      upazila: upazila.trim(),
-      union: union.trim(),
-      ward: ward.trim(),
+      division: location.division.trim(),
+      district: location.district.trim(),
+      upazila: location.upazila.trim(),
+      union: location.union.trim(),
+      ward: location.ward.trim(),
+      centerName: location.centerName.trim(),
       paymentNote: paymentNote.trim(),
       deviceId: safeDeviceId,
       electionNameYear: electionNameYear.trim(),
@@ -132,8 +140,16 @@ export function ActivationView({ user, existingRequest, onSignOut }: ActivationV
               </span>
             </div>
           </div>
-          <div className="flex items-center gap-4 shrink-0">
-            <span className="hidden sm:inline text-xs text-slate-600 truncate max-w-[220px]">
+          <div className="flex items-center gap-3 shrink-0">
+            <button
+              type="button"
+              onClick={() => setShowDemo((d) => !d)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-100 transition-colors cursor-pointer whitespace-nowrap"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              {showDemo ? 'রেজিস্ট্রেশনে ফিরুন' : 'লাইভ ডেমো দেখুন'}
+            </button>
+            <span className="hidden sm:inline text-xs text-slate-600 truncate max-w-[200px]">
               {user.email}
             </span>
             <button
@@ -148,7 +164,8 @@ export function ActivationView({ user, existingRequest, onSignOut }: ActivationV
         </div>
       </header>
 
-      <main className="flex-1 max-w-4xl w-full mx-auto px-6 py-8 space-y-6">
+      <main className="flex-1 max-w-5xl w-full mx-auto px-6 py-8 space-y-6">
+        {showDemo && <PublicDemoSection />}
         {existingRequest && (
           <section className="bg-white border border-slate-200 rounded-xl p-6 space-y-5">
             <div className="flex flex-wrap items-start justify-between gap-4">
@@ -196,10 +213,15 @@ export function ActivationView({ user, existingRequest, onSignOut }: ActivationV
                 </div>
               </div>
               <div>
-                <div className="text-xs text-slate-500">নির্ধারিত এলাকা</div>
+                <div className="text-xs text-slate-500">নির্ধারিত এলাকা ও ভোট কেন্দ্র</div>
                 <div className="font-medium text-slate-900 mt-0.5">
                   {existingRequest.union}, ওয়ার্ড {existingRequest.ward}
                 </div>
+                {existingRequest.centerName && (
+                  <div className="text-xs font-medium text-emerald-800 mt-0.5">
+                    কেন্দ্র: {existingRequest.centerName}
+                  </div>
+                )}
                 <div className="text-xs text-slate-600 mt-0.5">
                   {existingRequest.upazila} · {existingRequest.district} · {existingRequest.division}
                 </div>
@@ -281,86 +303,33 @@ export function ActivationView({ user, existingRequest, onSignOut }: ActivationV
             </div>
 
             <div className="pt-2 border-t border-slate-200 space-y-4">
-              <h3 className="text-sm font-semibold text-slate-900">প্রশাসনিক এলাকা</h3>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                <div>
-                  <label className="block text-xs font-medium text-slate-700 mb-1.5">
-                    বিভাগ *
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={division}
-                    onChange={(e) => setDivision(e.target.value)}
-                    placeholder="যেমন: রাজশাহী"
-                    className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-600"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-slate-700 mb-1.5">
-                    জেলা *
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={district}
-                    onChange={(e) => setDistrict(e.target.value)}
-                    placeholder="যেমন: বগুড়া"
-                    className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-600"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-slate-700 mb-1.5">
-                    উপজেলা / থানা *
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={upazila}
-                    onChange={(e) => setUpazila(e.target.value)}
-                    placeholder="যেমন: সদর"
-                    className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-600"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-slate-700 mb-1.5">
-                    ইউনিয়ন / পৌরসভা *
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={union}
-                    onChange={(e) => setUnion(e.target.value)}
-                    placeholder="যেমন: মহাদেবপুর"
-                    className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-600"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-slate-700 mb-1.5">
-                    ওয়ার্ড নম্বর *
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={ward}
-                    onChange={(e) => setWard(e.target.value)}
-                    placeholder="যেমন: ০৪"
-                    className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-600"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-slate-700 mb-1.5">
-                    পেমেন্ট রেফারেন্স / TrxID *
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={paymentNote}
-                    onChange={(e) => setPaymentNote(e.target.value)}
-                    placeholder="বিকাশ/নগদ TrxID বা মন্তব্য"
-                    className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-600"
-                  />
-                </div>
+              <div>
+                <h3 className="text-sm font-semibold text-slate-900">
+                  প্রশাসনিক এলাকা ও ভোট কেন্দ্র (অভিন্ন জিপিএস লোকেশন)
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  ড্রপডাউন থেকে বিভাগ, জেলা ও উপজেলা নির্বাচন করে ইউনিয়ন, ওয়ার্ড নম্বর ও ভোট কেন্দ্র লিখুন।
+                </p>
+              </div>
+
+              <BdLocationSelector
+                value={location}
+                onChange={setLocation}
+                requireCenterName={true}
+              />
+
+              <div className="max-w-md">
+                <label className="block text-xs font-medium text-slate-700 mb-1.5">
+                  পেমেন্ট রেফারেন্স / TrxID *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={paymentNote}
+                  onChange={(e) => setPaymentNote(e.target.value)}
+                  placeholder="বিকাশ/নগদ TrxID বা মন্তব্য"
+                  className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-600"
+                />
               </div>
             </div>
 

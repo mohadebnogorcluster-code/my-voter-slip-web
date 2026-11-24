@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { signInWithPopup } from 'firebase/auth';
-import { FileCheck2, Printer, Search, ShieldCheck, AlertCircle } from 'lucide-react';
+import { FileCheck2, Printer, Search, ShieldCheck, AlertCircle, Sparkles } from 'lucide-react';
 import { auth, googleProvider } from '../firebase';
 import { DeveloperFooter, SITE_LOGO_SRC } from './DeveloperFooter';
+import { PublicDemoSection } from './PublicDemoSection';
 
 export function AuthGate() {
   const [signingIn, setSigningIn] = useState(false);
@@ -64,8 +65,9 @@ export function AuthGate() {
         </div>
       </header>
 
-      <main className="flex-1 flex items-center justify-center px-6 py-12">
-        <div className="max-w-5xl w-full grid grid-cols-1 lg:grid-cols-12 gap-8 items-stretch">
+      <main className="flex-1 px-4 sm:px-6 py-8 sm:py-12">
+        <div className="max-w-6xl mx-auto space-y-12">
+          <div className="no-print max-w-5xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-8 items-stretch">
           <section className="lg:col-span-7 flex flex-col justify-center space-y-6">
             <div className="space-y-3">
               <p className="text-xs font-semibold tracking-wide text-emerald-700">
@@ -77,6 +79,15 @@ export function AuthGate() {
               <p className="text-base text-slate-600 leading-relaxed max-w-xl">
                 আপনার নির্ধারিত বিভাগ, জেলা, উপজেলা, ইউনিয়ন ও ওয়ার্ডের ভোটার তালিকা মুহূর্তেই খুঁজুন, প্রার্থীর তথ্য ও প্রতীকসহ স্লিপ সাজান এবং ব্রাউজার থেকে সরাসরি এ৪ (A4) কাগজে প্রিন্ট করুন।
               </p>
+              <div className="pt-1">
+                <a
+                  href="#public-demo-workspace"
+                  className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-emerald-900 bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-100 transition-colors"
+                >
+                  <Sparkles className="w-4 h-4 text-emerald-700" />
+                  রেজিস্ট্রেশনের আগে লাইভ ডেমো দেখুন (৫ জন ভোটার)
+                </a>
+              </div>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-4 border-t border-slate-200">
@@ -166,6 +177,10 @@ export function AuthGate() {
               </p>
             </div>
           </section>
+          </div>
+
+          {/* 5-Voter Public Demo Before Registration */}
+          <PublicDemoSection onRequestSignIn={handleGoogleSignIn} />
         </div>
       </main>
 

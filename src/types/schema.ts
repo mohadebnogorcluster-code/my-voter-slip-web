@@ -83,6 +83,7 @@ export interface UserRequest {
   upazila: string;
   union: string;
   ward: string;
+  centerName?: string;
   paymentNote: string;
   deviceId: string;
   electionNameYear?: string;

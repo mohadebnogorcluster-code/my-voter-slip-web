@@ -19,6 +19,8 @@ import {
   Upload,
   AlertCircle,
   Loader2,
+  FileSpreadsheet,
+  Download,
 } from 'lucide-react';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import type {
@@ -31,6 +33,13 @@ import {
   formatIsoDateShort,
   toFirestoreMillis,
 } from '../utils/slipHelpers';
+import {
+  parseVoterCsvText,
+  SAMPLE_VOTER_CSV_CONTENT,
+  type ParsedVoterImportRow,
+} from '../utils/csvVoterParser';
+import { downloadBlob } from '../utils/slipCapture';
+import { BdLocationSelector, type BdLocationValue } from './BdLocationSelector';
 import { SeatPlanManager } from './SeatPlanManager';
 
 interface AdminConsoleViewProps {
@@ -82,15 +91,20 @@ export function AdminConsoleView({
   const [deletingCenterId, setDeletingCenterId] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
-  // Import state
+  // Import state (CSV primary + optional JSON fallback)
   const [showImporter, setShowImporter] = useState(false);
-  const [impDivision, setImpDivision] = useState('');
-  const [impDistrict, setImpDistrict] = useState('');
-  const [impUpazila, setImpUpazila] = useState('');
-  const [impUnion, setImpUnion] = useState('');
-  const [impWard, setImpWard] = useState('');
-  const [impCenterName, setImpCenterName] = useState('');
-  const [impAreaCode, setImpAreaCode] = useState('');
+  const [importLocation, setImportLocation] = useState<BdLocationValue>({
+    division: '',
+    district: '',
+    upazila: '',
+    union: '',
+    ward: '',
+    centerName: '',
+    voterAreaCode: '',
+  });
+  const [importMode, setImportMode] = useState<'csv' | 'json'>('csv');
+  const [csvFileName, setCsvFileName] = useState('');
+  const [parsedCsvRows, setParsedCsvRows] = useState<ParsedVoterImportRow[]>([]);
   const [impJsonText, setImpJsonText] = useState('');
   const [importing, setImporting] = useState(false);
   const [importFeedback, setImportFeedback] = useState<{
@@ -181,39 +195,87 @@ export function AdminConsoleView({
     }
   };
 
+  const handleCsvFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImportFeedback(null);
+    try {
+      const text = await file.text();
+      const rows = parseVoterCsvText(text);
+      setCsvFileName(file.name);
+      setParsedCsvRows(rows);
+    } catch (err) {
+      setCsvFileName(file.name);
+      setParsedCsvRows([]);
+      setImportFeedback({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'CSV ফাইলটি পড়া যায়নি।',
+      });
+    } finally {
+      e.target.value = '';
+    }
+  };
+
+  const handleDownloadSampleCsv = () => {
+    const blob = new Blob([SAMPLE_VOTER_CSV_CONTENT], {
+      type: 'text/csv;charset=utf-8;',
+    });
+    downloadBlob(blob, 'sample-voter-list.csv');
+  };
+
   const handleImportCenter = async (e: React.FormEvent) => {
     e.preventDefault();
     setImportFeedback(null);
 
+    const { division, district, upazila, union, ward, centerName, voterAreaCode } =
+      importLocation;
+
     if (
-      !impDivision.trim() ||
-      !impDistrict.trim() ||
-      !impUpazila.trim() ||
-      !impUnion.trim() ||
-      !impWard.trim() ||
-      !impCenterName.trim() ||
-      !impJsonText.trim()
+      !division.trim() ||
+      !district.trim() ||
+      !upazila.trim() ||
+      !union.trim() ||
+      !ward.trim() ||
+      !centerName.trim()
     ) {
       setImportFeedback({
         type: 'error',
-        text: 'অনুগ্রহ করে কেন্দ্রের সব প্রয়োজনীয় ঘর পূরণ করুন এবং সঠিক JSON তালিকা পেস্ট করুন।',
+        text: 'অনুগ্রহ করে বিভাগ, জেলা, উপজেলা নির্বাচন করুন এবং ইউনিয়ন, ওয়ার্ড নম্বর ও ভোট কেন্দ্রের নাম লিখুন।',
       });
       return;
     }
 
     let parsedRows: RawVoterImportRow[];
-    try {
-      const candidate = JSON.parse(impJsonText);
-      if (!Array.isArray(candidate) || candidate.length === 0) {
-        throw new Error('JSON অবশ্যই ভোটার তথ্যের একটি অ-শূন্য তালিকা (Array) হতে হবে।');
+    if (importMode === 'csv') {
+      if (parsedCsvRows.length === 0) {
+        setImportFeedback({
+          type: 'error',
+          text: 'অনুগ্রহ করে একটি বৈধ ভোটার তালিকা CSV (.csv) ফাইল নির্বাচন করুন।',
+        });
+        return;
       }
-      parsedRows = candidate;
-    } catch (err) {
-      setImportFeedback({
-        type: 'error',
-        text: err instanceof Error ? err.message : 'JSON ফরম্যাট সঠিক নয়।',
-      });
-      return;
+      parsedRows = parsedCsvRows;
+    } else {
+      if (!impJsonText.trim()) {
+        setImportFeedback({
+          type: 'error',
+          text: 'অনুগ্রহ করে সঠিক JSON তালিকা পেস্ট করুন।',
+        });
+        return;
+      }
+      try {
+        const candidate = JSON.parse(impJsonText);
+        if (!Array.isArray(candidate) || candidate.length === 0) {
+          throw new Error('JSON অবশ্যই ভোটার তথ্যের একটি অ-শূন্য তালিকা (Array) হতে হবে।');
+        }
+        parsedRows = candidate;
+      } catch (err) {
+        setImportFeedback({
+          type: 'error',
+          text: err instanceof Error ? err.message : 'JSON ফরম্যাট সঠিক নয়।',
+        });
+        return;
+      }
     }
 
     setImporting(true);
@@ -242,13 +304,13 @@ export function AdminConsoleView({
 
         return {
           centerId,
-          division: impDivision.trim(),
-          district: impDistrict.trim(),
-          upazila: impUpazila.trim(),
-          union: impUnion.trim(),
-          ward: impWard.trim(),
-          centerName: impCenterName.trim(),
-          voterAreaCode: impAreaCode.trim(),
+          division: division.trim(),
+          district: district.trim(),
+          upazila: upazila.trim(),
+          union: union.trim(),
+          ward: ward.trim(),
+          centerName: centerName.trim(),
+          voterAreaCode: (voterAreaCode ?? '').trim(),
           serialNo: serialStr,
           serialNumeric: serialNum,
           name: String(row.name ?? ''),
@@ -266,13 +328,13 @@ export function AdminConsoleView({
       });
 
       const centerPayload: Omit<PollingCenter, 'id'> = {
-        division: impDivision.trim(),
-        district: impDistrict.trim(),
-        upazila: impUpazila.trim(),
-        union: impUnion.trim(),
-        ward: impWard.trim(),
-        centerName: impCenterName.trim(),
-        voterAreaCode: impAreaCode.trim(),
+        division: division.trim(),
+        district: district.trim(),
+        upazila: upazila.trim(),
+        union: union.trim(),
+        ward: ward.trim(),
+        centerName: centerName.trim(),
+        voterAreaCode: (voterAreaCode ?? '').trim(),
         totalVoters: voterPayloads.length,
         maleCount,
         femaleCount,
@@ -298,12 +360,17 @@ export function AdminConsoleView({
 
       setImportFeedback({
         type: 'success',
-        text: `"${impCenterName.trim()}" কেন্দ্রে ${formatBnNumber(
+        text: `"${centerName.trim()}" কেন্দ্রে ${formatBnNumber(
           voterPayloads.length
         )} জন ভোটারের তথ্য সফলভাবে আপলোড হয়েছে।`,
       });
-      setImpCenterName('');
-      setImpAreaCode('');
+      setImportLocation((prev) => ({
+        ...prev,
+        centerName: '',
+        voterAreaCode: '',
+      }));
+      setCsvFileName('');
+      setParsedCsvRows([]);
       setImpJsonText('');
       await refreshCenters();
     } catch (err) {
@@ -446,6 +513,11 @@ export function AdminConsoleView({
                         <div>
                           {req.union}, ওয়ার্ড {req.ward}
                         </div>
+                        {req.centerName && (
+                          <div className="text-[11px] font-medium text-emerald-800">
+                            কেন্দ্র: {req.centerName}
+                          </div>
+                        )}
                         <div className="text-[11px] text-slate-500">
                           {req.upazila} · {req.district} · {req.division}
                         </div>
@@ -535,24 +607,49 @@ export function AdminConsoleView({
               className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-emerald-700 rounded-lg hover:bg-emerald-800 transition-colors cursor-pointer"
             >
               <Upload className="w-3.5 h-3.5" />
-              {showImporter ? 'JSON আমদানি প্যানেল বন্ধ করুন' : 'নতুন কেন্দ্রের JSON আপলোড করুন'}
+              {showImporter ? 'CSV আপলোড প্যানেল বন্ধ করুন' : 'নতুন কেন্দ্রের CSV আপলোড করুন'}
             </button>
           </div>
 
           {showImporter && (
             <form
               onSubmit={handleImportCenter}
-              className="bg-white border border-slate-200 rounded-xl p-5 space-y-4"
+              className="bg-white border border-slate-200 rounded-xl p-5 space-y-5"
             >
-              <div>
-                <h2 className="text-sm font-semibold text-slate-900">
-                  ভোটকেন্দ্র ও ভোটার তালিকা আমদানি করুন
-                </h2>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  অ্যান্ড্রয়েড অ্যাপের মূল ডাটাবেস কাঠামো অনুযায়ী সরাসরি{' '}
-                  <code className="font-mono">centers_list</code> ও{' '}
-                  <code className="font-mono">voters_data</code>-তে সংরক্ষণ হবে।
-                </p>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h2 className="text-sm font-semibold text-slate-900">
+                    নতুন ভোটকেন্দ্র ও ভোটার তালিকা CSV আপলোড করুন
+                  </h2>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    মোবাইল অ্যাপের মতো বিভাগ, জেলা ও উপজেলা ড্রপডাউন থেকে নির্বাচন করে ইউনিয়ন, ওয়ার্ড ও ভোট কেন্দ্র লিখুন এবং CSV ফাইল আপলোড করুন।
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg">
+                  <button
+                    type="button"
+                    onClick={() => setImportMode('csv')}
+                    className={`px-3 py-1 text-xs font-medium rounded-md cursor-pointer ${
+                      importMode === 'csv'
+                        ? 'bg-white text-slate-900 shadow-xs'
+                        : 'text-slate-600'
+                    }`}
+                  >
+                    CSV ফাইল
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setImportMode('json')}
+                    className={`px-3 py-1 text-xs font-medium rounded-md cursor-pointer ${
+                      importMode === 'json'
+                        ? 'bg-white text-slate-900 shadow-xs'
+                        : 'text-slate-600'
+                    }`}
+                  >
+                    JSON পেস্ট
+                  </button>
+                </div>
               </div>
 
               {importFeedback && (
@@ -568,77 +665,83 @@ export function AdminConsoleView({
                 </div>
               )}
 
-              <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-                <input
-                  type="text"
-                  required
-                  value={impDivision}
-                  onChange={(e) => setImpDivision(e.target.value)}
-                  placeholder="বিভাগ *"
-                  className="px-3 py-2 text-xs border border-slate-300 rounded-lg"
-                />
-                <input
-                  type="text"
-                  required
-                  value={impDistrict}
-                  onChange={(e) => setImpDistrict(e.target.value)}
-                  placeholder="জেলা *"
-                  className="px-3 py-2 text-xs border border-slate-300 rounded-lg"
-                />
-                <input
-                  type="text"
-                  required
-                  value={impUpazila}
-                  onChange={(e) => setImpUpazila(e.target.value)}
-                  placeholder="উপজেলা *"
-                  className="px-3 py-2 text-xs border border-slate-300 rounded-lg"
-                />
-                <input
-                  type="text"
-                  required
-                  value={impUnion}
-                  onChange={(e) => setImpUnion(e.target.value)}
-                  placeholder="ইউনিয়ন / পৌরসভা *"
-                  className="px-3 py-2 text-xs border border-slate-300 rounded-lg"
-                />
-                <input
-                  type="text"
-                  required
-                  value={impWard}
-                  onChange={(e) => setImpWard(e.target.value)}
-                  placeholder="ওয়ার্ড *"
-                  className="px-3 py-2 text-xs border border-slate-300 rounded-lg"
-                />
-                <input
-                  type="text"
-                  required
-                  value={impCenterName}
-                  onChange={(e) => setImpCenterName(e.target.value)}
-                  placeholder="ভোটকেন্দ্রের নাম *"
-                  className="sm:col-span-2 px-3 py-2 text-xs border border-slate-300 rounded-lg"
-                />
-                <input
-                  type="text"
-                  value={impAreaCode}
-                  onChange={(e) => setImpAreaCode(e.target.value)}
-                  placeholder="ভোটার এলাকা কোড"
-                  className="px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg"
-                />
-              </div>
+              <BdLocationSelector
+                value={importLocation}
+                onChange={setImportLocation}
+                requireCenterName={true}
+                showAreaCode={true}
+                compact={true}
+              />
 
-              <div>
-                <label className="block text-xs font-medium text-slate-700 mb-1">
-                  ভোটার তালিকা JSON (ফিল্ডসমূহ: serialNo, name, voterNo, fatherName, motherName, gender, dateOfBirth, address, occupation)
-                </label>
-                <textarea
-                  rows={5}
-                  required
-                  value={impJsonText}
-                  onChange={(e) => setImpJsonText(e.target.value)}
-                  placeholder='[{"serialNo":"0001","name":"মোঃ রহিম মিয়া","voterNo":"1234567890123","fatherName":"...","motherName":"...","gender":"পুরুষ","dateOfBirth":"01/01/1985","address":"...","occupation":"কৃষি"}]'
-                  className="w-full p-3 text-xs font-mono border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-600"
-                />
-              </div>
+              {importMode === 'csv' ? (
+                <div className="space-y-3 pt-2 border-t border-slate-100">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-xs font-medium text-slate-700">
+                      ভোটার তালিকা CSV ফাইল নির্বাচন করুন (.csv) *
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleDownloadSampleCsv}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-md hover:bg-emerald-100 cursor-pointer"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      নমুনা CSV ডাউনলোড
+                    </button>
+                  </div>
+
+                  <label className="flex flex-col items-center justify-center gap-2 p-6 border-2 border-dashed border-slate-300 rounded-xl bg-slate-50/70 hover:bg-emerald-50/40 hover:border-emerald-400 transition-colors cursor-pointer text-center">
+                    <FileSpreadsheet className="w-8 h-8 text-emerald-700" />
+                    <div className="text-xs font-semibold text-slate-800">
+                      {csvFileName
+                        ? `নির্বাচিত ফাইল: ${csvFileName}`
+                        : 'কম্পিউটার বা মোবাইল থেকে CSV ফাইল বেছে নিতে এখানে ক্লিক করুন'}
+                    </div>
+                    <div className="text-[11px] text-slate-500">
+                      কলাম: serialNo, name, voterNo, fatherName, motherName, gender, dateOfBirth, address, occupation (বাংলা বা ইংরেজি হেডার সমর্থিত)
+                    </div>
+                    <input
+                      type="file"
+                      accept=".csv,text/csv"
+                      onChange={handleCsvFileSelected}
+                      className="sr-only"
+                    />
+                  </label>
+
+                  {parsedCsvRows.length > 0 && (
+                    <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200 space-y-2 text-xs">
+                      <div className="font-semibold text-emerald-950">
+                        মোট {formatBnNumber(parsedCsvRows.length)} জন ভোটার শনাক্ত হয়েছে (আপলোডের জন্য প্রস্তুত)
+                      </div>
+                      <div className="text-[11px] text-emerald-900 space-y-0.5">
+                        {parsedCsvRows.slice(0, 3).map((row, idx) => (
+                          <div key={idx} className="truncate">
+                            #{row.serialNo} · {row.name} · {row.voterNo} · {row.gender || '—'}
+                          </div>
+                        ))}
+                        {parsedCsvRows.length > 3 && (
+                          <div className="text-emerald-700">
+                            ... আরও {formatBnNumber(parsedCsvRows.length - 3)} জন ভোটার
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    ভোটার তালিকা JSON (ফিল্ডসমূহ: serialNo, name, voterNo, fatherName, motherName, gender, dateOfBirth, address, occupation)
+                  </label>
+                  <textarea
+                    rows={5}
+                    required={importMode === 'json'}
+                    value={impJsonText}
+                    onChange={(e) => setImpJsonText(e.target.value)}
+                    placeholder='[{"serialNo":"0001","name":"মোঃ রহিম মিয়া","voterNo":"1234567890123","fatherName":"...","motherName":"...","gender":"পুরুষ","dateOfBirth":"01/01/1985","address":"...","occupation":"কৃষি"}]'
+                    className="w-full p-3 text-xs font-mono border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-600"
+                  />
+                </div>
+              )}
 
               <div className="flex justify-end">
                 <button
@@ -646,7 +749,11 @@ export function AdminConsoleView({
                   disabled={importing}
                   className="px-4 py-2 text-xs font-semibold text-white bg-emerald-800 rounded-lg hover:bg-emerald-900 disabled:opacity-50 cursor-pointer"
                 >
-                  {importing ? 'আপলোড হচ্ছে...' : 'কেন্দ্র ও ভোটার তালিকা আপলোড করুন'}
+                  {importing
+                    ? 'আপলোড হচ্ছে...'
+                    : importMode === 'csv'
+                    ? 'CSV ও কেন্দ্র সংরক্ষণ করুন'
+                    : 'কেন্দ্র ও ভোটার তালিকা আপলোড করুন'}
                 </button>
               </div>
             </form>
