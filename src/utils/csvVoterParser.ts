@@ -1,4 +1,4 @@
-import { parseSerialNumber } from './slipHelpers';
+import { banglaToEnglishDigits } from './slipHelpers';
 
 export interface ParsedVoterImportRow {
   serialNo: string;
@@ -11,8 +11,9 @@ export interface ParsedVoterImportRow {
   dateOfBirth: string;
   address: string;
   occupation: string;
-  buildingName: string;
-  roomNumber: string;
+  votingCenter: string;
+  voterArea: string;
+  voterAreaCode: string;
 }
 
 const HEADER_ALIASES: Record<keyof Omit<ParsedVoterImportRow, 'serialNumeric'>, string[]> = {
@@ -54,8 +55,23 @@ const HEADER_ALIASES: Record<keyof Omit<ParsedVoterImportRow, 'serialNumeric'>, 
   dateOfBirth: ['dateofbirth', 'date_of_birth', 'dob', 'birthdate', 'জন্মতারিখ'],
   address: ['address', 'ঠিকানা', 'গ্রাম'],
   occupation: ['occupation', 'profession', 'পেশা'],
-  buildingName: ['buildingname', 'building_name', 'building', 'ভবন', 'ভবনেরনাম'],
-  roomNumber: ['roomnumber', 'room_number', 'room', 'কক্ষ', 'কক্ষনম্বর', 'কক্ষনং'],
+  votingCenter: [
+    'votingcenter',
+    'voting_center',
+    'pollingcenter',
+    'polling_center',
+    'ভোটকেন্দ্র',
+    'ভোটকেন্দ্রেরনাম',
+  ],
+  voterArea: ['voterarea', 'voter_area', 'area', 'ভোটারএলাকা', 'এলাকা'],
+  voterAreaCode: [
+    'voterareacode',
+    'voter_area_code',
+    'areacode',
+    'area_code',
+    'ভোটারএলাকাকোড',
+    'এলাকাকোড',
+  ],
 };
 
 function normalizeHeaderKey(raw: string): string {
@@ -76,6 +92,13 @@ function matchHeaderField(
     }
   }
   return null;
+}
+
+export function parseSerialInteger(serialStr: string, fallbackIndex: number): number {
+  const englishDigitsOnly = banglaToEnglishDigits(serialStr).replace(/\D/g, '');
+  if (!englishDigitsOnly) return fallbackIndex;
+  const parsed = parseInt(englishDigitsOnly, 10);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallbackIndex;
 }
 
 /**
@@ -160,8 +183,8 @@ export function parseVoterCsvText(csvText: string): ParsedVoterImportRow[] {
       }
     });
 
-    const serialStr = record.serialNo || String(results.length + 1);
-    const serialNumeric = parseSerialNumber(serialStr) || results.length + 1;
+    const serialStr = (record.serialNo || String(results.length + 1)).slice(0, 40);
+    const serialNumeric = parseSerialInteger(serialStr, results.length + 1);
     const name = record.name || '';
     const voterNo = record.voterNo || '';
 
@@ -178,8 +201,9 @@ export function parseVoterCsvText(csvText: string): ParsedVoterImportRow[] {
       dateOfBirth: record.dateOfBirth || '',
       address: record.address || '',
       occupation: record.occupation || '',
-      buildingName: record.buildingName || '',
-      roomNumber: record.roomNumber || '',
+      votingCenter: record.votingCenter || '',
+      voterArea: record.voterArea || '',
+      voterAreaCode: record.voterAreaCode || '',
     });
   }
 
@@ -191,6 +215,6 @@ export function parseVoterCsvText(csvText: string): ParsedVoterImportRow[] {
 }
 
 export const SAMPLE_VOTER_CSV_CONTENT =
-  '\uFEFFserialNo,name,voterNo,fatherName,motherName,gender,dateOfBirth,address,occupation,buildingName,roomNumber\n' +
-  '0001,মোঃ রহিম মিয়া,8765432100001,মোঃ করিম উদ্দিন,মোছাঃ আমেনা বেগম,পুরুষ,01/01/1985,পূর্ব পাড়া,কৃষি,পুরাতন ভবন,০১\n' +
-  '0002,মোছাঃ খাদিজা খাতুন,8765432100002,মোঃ জব্বার আলী,মোছাঃ রোকেয়া বেগম,মহিলা,12/05/1990,মধ্য পাড়া,গৃহিণী,নতুন ভবন,০২\n';
+  '\uFEFFserialNo,name,voterNo,fatherName,motherName,gender,dateOfBirth,address,occupation,voterArea,voterAreaCode\n' +
+  '০০১,মোঃ রহিম মিয়া,8765432100001,মোঃ করিম উদ্দিন,মোছাঃ আমেনা বেগম,পুরুষ,01/01/1985,পূর্ব পাড়া,কৃষি,পূর্ব পাড়া,০৪৫৬\n' +
+  '০০২,মোছাঃ খাদিজা খাতুন,8765432100002,মোঃ জব্বার আলী,মোছাঃ রোকেয়া বেগম,মহিলা,12/05/1990,মধ্য পাড়া,গৃহিণী,মধ্য পাড়া,০৪৫৬\n';

@@ -22,7 +22,7 @@ import {
   FileSpreadsheet,
   Download,
 } from 'lucide-react';
-import { db, handleFirestoreError, OperationType } from '../firebase';
+import { auth, db, handleFirestoreError, OperationType } from '../firebase';
 import type {
   PollingCenter,
   UserRequest,
@@ -34,6 +34,7 @@ import {
   toFirestoreMillis,
 } from '../utils/slipHelpers';
 import {
+  parseSerialInteger,
   parseVoterCsvText,
   SAMPLE_VOTER_CSV_CONTENT,
   type ParsedVoterImportRow,
@@ -59,8 +60,9 @@ interface RawVoterImportRow {
   dateOfBirth?: string;
   address?: string;
   occupation?: string;
-  buildingName?: string;
-  roomNumber?: string;
+  votingCenter?: string;
+  voterArea?: string;
+  voterAreaCode?: string;
 }
 
 const REQUEST_STATUS_FILTERS: { id: 'all' | UserRequestStatus; label: string }[] = [
@@ -280,21 +282,48 @@ export function AdminConsoleView({
 
     setImporting(true);
     try {
-      const now = new Date().toISOString();
+      const currentUid = auth.currentUser?.uid || adminUid;
+      if (!currentUid) {
+        throw new Error('অ্যাডমিন অ্যাকাউন্ট লগইন করা নেই। অনুগ্রহ করে পুনরায় সাইন ইন করুন।');
+      }
+
+      const cleanStr = (val: unknown, maxLen: number): string =>
+        val === null || val === undefined ? '' : String(val).trim().slice(0, maxLen);
+
+      const safeDivision = cleanStr(division, 100);
+      const safeDistrict = cleanStr(district, 100);
+      const safeUpazila = cleanStr(upazila, 100);
+      const safeUnion = cleanStr(union, 120);
+      const safeWard = cleanStr(ward, 30);
+      const safeCenterName = cleanStr(centerName, 200);
+      const safeFormAreaCode = cleanStr(voterAreaCode, 60);
+
+      if (
+        !safeDivision ||
+        !safeDistrict ||
+        !safeUpazila ||
+        !safeUnion ||
+        !safeWard ||
+        !safeCenterName
+      ) {
+        throw new Error('কেন্দ্রের বিভাগ, জেলা, উপজেলা, ইউনিয়ন, ওয়ার্ড এবং নাম খালি রাখা যাবে না।');
+      }
+
       const centerRef = doc(collection(db, 'centers_list'));
       const centerId = centerRef.id;
+      if (!/^[a-zA-Z0-9_-]{1,128}$/.test(centerId)) {
+        throw new Error('অবৈধ centerId তৈরি হয়েছে।');
+      }
 
       let maleCount = 0;
       let femaleCount = 0;
+      const voterCreatedTimestamp = serverTimestamp();
 
       const voterPayloads = parsedRows.map((row, idx) => {
-        const serialStr = String(row.serialNo ?? idx + 1);
-        const serialNum =
-          typeof row.serialNumeric === 'number'
-            ? row.serialNumeric
-            : parseInt(serialStr.replace(/\D/g, ''), 10) || idx + 1;
+        const serialStr = cleanStr(row.serialNo ?? idx + 1, 40) || String(idx + 1);
+        const serialNum = parseSerialInteger(serialStr, idx + 1);
 
-        const genderStr = String(row.gender ?? '');
+        const genderStr = cleanStr(row.gender, 40);
         const gLower = genderStr.toLowerCase();
         if (gLower.includes('female') || gLower.includes('মহিলা') || gLower.includes('নারী')) {
           femaleCount += 1;
@@ -302,56 +331,75 @@ export function AdminConsoleView({
           maleCount += 1;
         }
 
-        return {
+        const voterDoc: Record<string, unknown> = {
           centerId,
-          division: division.trim(),
-          district: district.trim(),
-          upazila: upazila.trim(),
-          union: union.trim(),
-          ward: ward.trim(),
-          centerName: centerName.trim(),
-          voterAreaCode: (voterAreaCode ?? '').trim(),
+          division: safeDivision,
+          district: safeDistrict,
+          upazila: safeUpazila,
+          union: safeUnion,
+          ward: safeWard,
+          centerName: safeCenterName,
           serialNo: serialStr,
           serialNumeric: serialNum,
-          name: String(row.name ?? ''),
-          voterNo: String(row.voterNo ?? ''),
-          fatherName: String(row.fatherName ?? ''),
-          motherName: String(row.motherName ?? ''),
+          name: cleanStr(row.name, 200),
+          voterNo: cleanStr(row.voterNo, 80),
+          fatherName: cleanStr(row.fatherName, 200),
+          motherName: cleanStr(row.motherName, 200),
           gender: genderStr,
-          dateOfBirth: String(row.dateOfBirth ?? ''),
-          address: String(row.address ?? ''),
-          occupation: String(row.occupation ?? ''),
-          buildingName: String(row.buildingName ?? ''),
-          roomNumber: String(row.roomNumber ?? ''),
-          createdAt: now,
+          dateOfBirth: cleanStr(row.dateOfBirth, 60),
+          address: cleanStr(row.address, 300),
+          occupation: cleanStr(row.occupation, 120),
+          createdAt: voterCreatedTimestamp,
         };
+
+        const rowVotingCenter = cleanStr(row.votingCenter, 200);
+        if (rowVotingCenter) {
+          voterDoc.votingCenter = rowVotingCenter;
+        }
+
+        const rowVoterArea = cleanStr(row.voterArea, 180);
+        if (rowVoterArea) {
+          voterDoc.voterArea = rowVoterArea;
+        }
+
+        const rowAreaCode = cleanStr(row.voterAreaCode, 60) || safeFormAreaCode;
+        if (rowAreaCode) {
+          voterDoc.voterAreaCode = rowAreaCode;
+        }
+
+        return voterDoc;
       });
 
-      const centerPayload: Omit<PollingCenter, 'id'> = {
-        division: division.trim(),
-        district: district.trim(),
-        upazila: upazila.trim(),
-        union: union.trim(),
-        ward: ward.trim(),
-        centerName: centerName.trim(),
-        voterAreaCode: (voterAreaCode ?? '').trim(),
-        totalVoters: voterPayloads.length,
-        maleCount,
-        femaleCount,
-        uploadedByUid: adminUid,
-        createdAt: now,
-        updatedAt: now,
+      // Use the exact same serverTimestamp() reference so createdAt == updatedAt in Firestore Rules
+      const centerTimestamp = serverTimestamp();
+      const centerPayload: Record<string, unknown> = {
+        division: safeDivision,
+        district: safeDistrict,
+        upazila: safeUpazila,
+        union: safeUnion,
+        ward: safeWard,
+        centerName: safeCenterName,
+        totalVoters: Math.trunc(voterPayloads.length),
+        maleCount: Math.trunc(maleCount),
+        femaleCount: Math.trunc(femaleCount),
+        uploadedByUid: currentUid,
+        createdAt: centerTimestamp,
+        updatedAt: centerTimestamp,
       };
+      if (safeFormAreaCode) {
+        centerPayload.voterAreaCode = safeFormAreaCode;
+      }
 
-      // Write center metadata first
+      // 1. Write center metadata document first
       const headerBatch = writeBatch(db);
       headerBatch.set(centerRef, centerPayload);
       await headerBatch.commit();
 
-      // Write voter records in chunks of 400
-      for (let i = 0; i < voterPayloads.length; i += 400) {
+      // 2. Write voter records sequentially in batches of 450 documents (Firestore max 500)
+      const BATCH_LIMIT = 450;
+      for (let i = 0; i < voterPayloads.length; i += BATCH_LIMIT) {
         const batch = writeBatch(db);
-        voterPayloads.slice(i, i + 400).forEach((vp) => {
+        voterPayloads.slice(i, i + BATCH_LIMIT).forEach((vp) => {
           const vRef = doc(collection(db, 'voters_data'));
           batch.set(vRef, vp);
         });
@@ -360,7 +408,7 @@ export function AdminConsoleView({
 
       setImportFeedback({
         type: 'success',
-        text: `"${centerName.trim()}" কেন্দ্রে ${formatBnNumber(
+        text: `"${safeCenterName}" কেন্দ্রে ${formatBnNumber(
           voterPayloads.length
         )} জন ভোটারের তথ্য সফলভাবে আপলোড হয়েছে।`,
       });
@@ -374,7 +422,15 @@ export function AdminConsoleView({
       setImpJsonText('');
       await refreshCenters();
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, 'centers_list / voters_data');
+      console.error('CSV/Center upload failed:', err);
+      const message =
+        err instanceof Error
+          ? err.message
+          : 'ভোটকেন্দ্র ও ভোটার তালিকা আপলোড করা যায়নি।';
+      setImportFeedback({
+        type: 'error',
+        text: `আপলোড ব্যর্থ হয়েছে: ${message}`,
+      });
     } finally {
       setImporting(false);
     }
